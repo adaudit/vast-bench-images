@@ -1,0 +1,21 @@
+# Pyannote 3.1.1 add-ons installed with --no-deps on top of
+# nvcr.io/nvidia/nemo:25.09.02.  These versions imported successfully with
+# the base's NumPy 1.26.4, SciPy 1.16.3, and Torch 2.8.0a0 stack.
+# Do not add numpy, scipy, torch, lightning, or torchmetrics here: they stay
+# supplied by the verified NeMo image.
+asteroid-filterbanks==0.4.0
+hyperpyyaml==1.2.3
+julius==0.2.8
+primePy==1.3
+pyannote.core==5.0.0
+pyannote.database==5.1.1
+pyannote.pipeline==3.0.1
+pytorch-metric-learning==2.9.0
+semver==3.0.4
+speechbrain==1.1.0
+tensorboardX==2.6.5
+torch-audiomentations==0.12.0
+torch-pitch-shift==1.2.5
+# The NeMo image has NVIDIA torch 2.8.0a0+5228986c39.nv25.6 but no matching
+# torchaudio wheel. Dockerfile builds the pinned upstream 2.8.0 source against
+# that exact torch ABI; do not replace it with the incompatible PyPI wheel.
