@@ -4,6 +4,7 @@ FROM runpod/pytorch:1.0.7-rc.138-cu1281-torch280-ubuntu2404
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/models \
     HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
+    HF_HUB_ENABLE_HF_TRANSFER=0 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     VIRTUAL_ENV=/workspace/venv \
