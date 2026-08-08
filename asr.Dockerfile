@@ -1,24 +1,22 @@
 # syntax=docker/dockerfile:1.7
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM runpod/pytorch:1.0.7-rc.138-cu1281-torch280-ubuntu2404
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/models \
     HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    VIRTUAL_ENV=/workspace/venv \
+    PATH=/workspace/venv/bin:$PATH
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential curl ffmpeg libsndfile1 python3 python3-pip && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg libsndfile1 && \
     rm -rf /var/lib/apt/lists/* && \
+    python3 -m venv "$VIRTUAL_ENV" && \
     python3 -m pip install --upgrade pip && \
-    python3 -m pip install --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.5.1+cu124 torchaudio==2.5.1+cu124 && \
-    python3 -m pip install \
+    python3 -m pip install --no-cache-dir \
       'nemo_toolkit[asr]==2.2.1' \
       huggingface_hub==0.27.1 \
-      runpod==1.11.0 && \
-    apt-get purge -y --auto-remove build-essential && \
-    rm -rf /var/lib/apt/lists/*
+      runpod==1.11.0
 
 WORKDIR /workspace
 COPY asr/worker.py asr/rp_handler.py ./
