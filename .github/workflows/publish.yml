@@ -34,6 +34,7 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v2
             ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v3
+            ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v4
           secrets: |
             hf_token=${{ secrets.HF_TOKEN }}
       - name: Build and publish diarization
