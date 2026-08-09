@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 WORKDIR /workspace
 COPY asr/worker.py asr/rp_handler.py ./
 COPY asr/bake_models.py ./
-RUN python3 bake_models.py && \
+RUN --mount=type=secret,id=hf_token,required=true \
+    HF_TOKEN="$(cat /run/secrets/hf_token)" python3 bake_models.py && \
     curl -fsSL --retry 3 -o /tmp/fixture.mp3 \
       https://archive.org/download/world_set_free_0907_librivox/the_world_set_free_00_wells.mp3 && \
     ffmpeg -y -i /tmp/fixture.mp3 -t 3000 -ac 1 -ar 16000 -c:a pcm_s16le /opt/fixture-50min.wav && \

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
@@ -16,7 +17,7 @@ downloads = {
     "whisper_v3": "Systran/faster-whisper-large-v3",
 }
 for name, repo in downloads.items():
-    snapshot_download(repo, local_dir=models / name)
+    snapshot_download(repo, local_dir=models / name, token=os.environ.get("HF_TOKEN"))
 (root / "model-pins.json").write_text(json.dumps({
     "models": model_pins,
     "blocked_lanes": [],
