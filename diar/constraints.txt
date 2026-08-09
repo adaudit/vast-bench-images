@@ -5,6 +5,7 @@ torchaudio==2.5.1+cu124
 torchvision==0.20.1+cu124
 pytorch-lightning==2.5.*
 # Stable pyannote 3.1.1 dependency pins from the production worker.
+numpy<2
 asteroid-filterbanks==0.4.0
 hyperpyyaml==1.2.3
 julius==0.2.8
