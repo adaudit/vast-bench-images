@@ -56,7 +56,9 @@ def _model(engine: str):
                 model.sortformer_modules.fifo_len = 40
                 model.sortformer_modules.spkcache_update_period = 300
             elif engine == "pyannote":
+                import torch
                 from pyannote.audio import Pipeline
+                torch.__version__ = torch.__version__.split("a", 1)[0].split("+", 1)[0]
                 model = Pipeline.from_pretrained(PYANNOTE_MODEL, use_auth_token=token, cache_dir=str(_cache_dir()))
                 if model is None:
                     raise WorkerError("could not load pyannote; set HF_TOKEN and accept the model license")
