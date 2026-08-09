@@ -1,20 +1,21 @@
 # syntax=docker/dockerfile:1.7
-FROM nvcr.io/nvidia/nemo:25.09.02
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/models \
     HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
-    NEMO_CACHE_DIR=/workspace/models/nemo
+    NEMO_CACHE_DIR=/workspace/models/nemo \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /workspace
 COPY diar/requirements.txt diar/constraints.txt ./
-RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/* && \
-    python3 -m pip install --no-cache-dir "$(grep '^runpod' requirements.txt)" && \
-    python3 -m pip install --no-cache-dir --no-build-isolation --no-deps \
-        'https://github.com/pytorch/audio/archive/refs/tags/v2.8.0.tar.gz' && \
-    python3 -m pip install --no-cache-dir --no-deps "$(grep '^pyannote' requirements.txt)" && \
-    python3 -m pip install --no-cache-dir --no-deps -r constraints.txt && \
-    python3 -c 'import numpy, scipy, torch, torchaudio, torchmetrics, lightning, nemo, runpod; from nemo.collections.asr.models import SortformerEncLabelModel; from pyannote.audio import Pipeline; assert numpy.__version__.startswith("1."); print("dependency imports OK")'
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
+    python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c constraints.txt -r requirements.txt && \
+    python3 -m pip cache purge && \
+    apt-get purge -y --auto-remove build-essential pybind11-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    python3 -c 'import torch, torchaudio; from nemo.collections.asr.models import SortformerEncLabelModel; from pyannote.audio import Pipeline; print(torch.__version__, torchaudio.__version__)'
 COPY diar/worker.py diar/rp_handler.py diar/bake_models.py ./
 RUN --mount=type=secret,id=hf_token,required=true \
     HF_TOKEN="$(cat /run/secrets/hf_token)" python3 bake_models.py && \

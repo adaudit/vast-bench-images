@@ -1,23 +1,20 @@
 # syntax=docker/dockerfile:1.7
-FROM runpod/pytorch:1.0.7-rc.138-cu1281-torch280-ubuntu2404
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/models \
     HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    VIRTUAL_ENV=/workspace/venv \
-    PATH=/workspace/venv/bin:$PATH
+    PYTHONDONTWRITEBYTECODE=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg libsndfile1 && \
-    rm -rf /var/lib/apt/lists/* && \
-    python3 -m venv "$VIRTUAL_ENV" && \
-    python3 -m pip install --upgrade pip && \
-    python3 -m pip install --no-cache-dir \
-      'nemo_toolkit[asr]==2.2.1' \
-      huggingface_hub==0.27.1 \
-      runpod==1.11.0
+COPY asr/constraints.txt /tmp/constraints.txt
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
+    python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
+      'nemo_toolkit[asr]==2.2.1' huggingface_hub==0.27.1 runpod==1.11.0 && \
+    python3 -m pip cache purge && \
+    apt-get purge -y --auto-remove build-essential pybind11-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 COPY asr/worker.py asr/rp_handler.py ./

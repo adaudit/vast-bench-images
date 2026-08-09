@@ -1,5 +1,4 @@
-# The NVIDIA NeMo base image supplies NeMo, NumPy, SciPy, Torch, Lightning,
-# and TorchMetrics.  Do not resolve pyannote against PyPI: its current
-# unconstrained dependency graph upgrades NumPy to 2.x.
+nemo_toolkit[asr]==2.2.1
 pyannote.audio==3.1.1
+pytorch-lightning==2.5.*
 runpod==1.11.0

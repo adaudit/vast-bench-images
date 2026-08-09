@@ -31,13 +31,13 @@ jobs:
           context: .
           file: asr.Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v1
+          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v2
       - name: Build and publish diarization
         uses: docker/build-push-action@v6
         with:
           context: .
           file: diar.Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-diar:v1
+          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-diar:v2
           secrets: |
             hf_token=${{ secrets.HF_TOKEN }}

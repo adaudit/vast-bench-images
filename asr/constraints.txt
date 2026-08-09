@@ -1,0 +1,5 @@
+# Matches pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime. Every pip install
+# uses this file so NeMo cannot replace the base CUDA/Torch stack.
+torch==2.5.1+cu124
+torchaudio==2.5.1+cu124
+torchvision==0.20.1+cu124
