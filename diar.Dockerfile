@@ -12,7 +12,6 @@ WORKDIR /workspace
 COPY diar/requirements.txt diar/constraints.txt ./
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
     python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c constraints.txt -r requirements.txt && \
-    python3 -m pip cache purge && \
     apt-get purge -y --auto-remove build-essential pybind11-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     python3 -c 'import torch, torchaudio; from nemo.collections.asr.models import SortformerEncLabelModel; from pyannote.audio import Pipeline; print(torch.__version__, torchaudio.__version__)'
