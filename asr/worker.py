@@ -121,7 +121,7 @@ def candidate_from_whisper(audio, model_dir, lane):
     from faster_whisper import WhisperModel
     model = _cached_model("whisper:" + lane, lambda: WhisperModel(str(model_dir), device="cuda", compute_type="int8_float16"))
     segments, info = model.transcribe(str(audio), beam_size=5, vad_filter=True)
-    result = [{"start_seconds": segment.start, "end_seconds": segment.end, "speaker": "S0", "text": segment.text.strip(), "confidence": float(getattr(segment, "avg_logprob", 0.0))} for segment in segments]
+    result = [{"start_seconds": segment.start, "end_seconds": segment.end, "text": segment.text.strip(), "confidence": float(getattr(segment, "avg_logprob", 0.0))} for segment in segments]
     confidence = min(1.0, max(0.0, (sum(s["confidence"] for s in result) / len(result) + 1) if result else 0.0))
     return {"lane": lane, "confidence": confidence, "segments": result, "language": getattr(info, "language", "")}
 
@@ -194,7 +194,7 @@ def candidate_from_parakeet(audio, models, lane, batch_size):
     measured = parakeet_confidence(hypothesis)
     confidence = 0.8 if measured is None else measured
     return {"lane": lane, "confidence": confidence, "confidence_measured": measured is not None, "segments": [
-        {"start_seconds": 0.0, "end_seconds": 0.0, "speaker": "S0", "text": text.strip(), "confidence": confidence}
+        {"start_seconds": 0.0, "end_seconds": 0.0, "text": text.strip(), "confidence": confidence}
     ], "language": ""}
 
 
@@ -236,9 +236,13 @@ def transcribe_with_fallback(audio, lane, models, blocked, params=None, transcri
                 try:
                     candidate = transcriber(audio, lane, models, blocked, batch_size)
                     candidate["lane"] = lane
+                    # Speaker labels come only from diarization; ASR-only lanes
+                    # emit none, and none is fabricated here.
                     labels = {}
                     for segment in candidate.get("segments", []):
-                        label = str(segment.get("speaker", ""))
+                        if "speaker" not in segment:
+                            continue
+                        label = str(segment["speaker"])
                         if not re.fullmatch(r"S\d+", label):
                             labels.setdefault(label, len(labels))
                             segment["speaker"] = "S" + str(labels[label])
