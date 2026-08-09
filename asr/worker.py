@@ -2,6 +2,7 @@
 """Credential-minimal ASR queue drainer for the mounted RunPod volume."""
 import hashlib
 import json
+import math
 import os
 import queue
 import signal
@@ -156,6 +157,23 @@ def warm_parakeet_pool(models):
     return parakeet_pool(models)
 
 
+def parakeet_confidence(hypothesis):
+    """Mean per-token probability from the TDT decoder's cumulative log-score.
+
+    Returns None when the hypothesis carries no usable score, so callers can
+    distinguish "measured low" from "unmeasurable" and only gate on the former.
+    """
+    score = getattr(hypothesis, "score", None)
+    tokens = getattr(hypothesis, "y_sequence", None)
+    count = len(tokens) if tokens is not None else 0
+    if score is None or count == 0:
+        return None
+    try:
+        return min(1.0, max(0.0, math.exp(float(score) / count)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def candidate_from_parakeet(audio, models, lane, batch_size):
     import torch
     pool = parakeet_pool(models)
@@ -173,8 +191,10 @@ def candidate_from_parakeet(audio, models, lane, batch_size):
             pool.checkin(instance)
     hypothesis = hypotheses[0]
     text = hypothesis.text if hasattr(hypothesis, "text") else str(hypothesis)
-    return {"lane": lane, "confidence": 0.8, "segments": [
-        {"start_seconds": 0.0, "end_seconds": 0.0, "speaker": "S0", "text": text.strip(), "confidence": 0.8}
+    measured = parakeet_confidence(hypothesis)
+    confidence = 0.8 if measured is None else measured
+    return {"lane": lane, "confidence": confidence, "confidence_measured": measured is not None, "segments": [
+        {"start_seconds": 0.0, "end_seconds": 0.0, "speaker": "S0", "text": text.strip(), "confidence": confidence}
     ], "language": ""}
 
 
