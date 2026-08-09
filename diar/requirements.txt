@@ -1,4 +1,4 @@
-nemo_toolkit[asr]==2.2.1
+nemo_toolkit[asr]==2.5.3
 pyannote.audio==3.1.1
 pytorch-lightning==2.5.*
 runpod==1.11.0
