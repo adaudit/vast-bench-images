@@ -117,9 +117,21 @@ def normalize_audio(audio):
         raise WorkerError("ffmpeg could not normalize audio to mono 16 kHz WAV") from error
 
 
+# Fallback-lane weights are not baked into the image; on first use per worker
+# they download from HF (~1 min) and persist on disk for the container lifetime.
+WHISPER_REPOS = {
+    "whisper_turbo_fallback": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "whisper_v3_salvage": "Systran/faster-whisper-large-v3",
+}
+
+
 def candidate_from_whisper(audio, model_dir, lane):
     from faster_whisper import WhisperModel
-    model = _cached_model("whisper:" + lane, lambda: WhisperModel(str(model_dir), device="cuda", compute_type="int8_float16"))
+    if (model_dir / "model.bin").exists():
+        source, root = str(model_dir), None
+    else:
+        source, root = WHISPER_REPOS[lane], str(model_dir.parent / "whisper_lazy")
+    model = _cached_model("whisper:" + lane, lambda: WhisperModel(source, device="cuda", compute_type="int8_float16", download_root=root))
     segments, info = model.transcribe(str(audio), beam_size=5, vad_filter=True)
     result = [{"start_seconds": segment.start, "end_seconds": segment.end, "text": segment.text.strip(), "confidence": float(getattr(segment, "avg_logprob", 0.0))} for segment in segments]
     confidence = min(1.0, max(0.0, (sum(s["confidence"] for s in result) / len(result) + 1) if result else 0.0))
@@ -136,9 +148,13 @@ def _cached_model(key, factory):
 def _load_parakeet_instance(models):
     import torch
     from nemo.collections.asr.models import ASRModel
-    model = ASRModel.from_pretrained(
-        model_name="nvidia/parakeet-tdt-0.6b-v2", cache_dir=str(models / "parakeet")
-    )
+    # NeMo's from_pretrained takes no cache_dir; load the baked .nemo directly
+    # so startup never reaches for the network.
+    baked = sorted((models / "parakeet").glob("*.nemo"))
+    if baked:
+        model = ASRModel.restore_from(str(baked[0]))
+    else:
+        model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
     return ParakeetInstance(model, torch.cuda.Stream())
 
 
