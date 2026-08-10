@@ -21,6 +21,14 @@ downloads = {
 
 def bake(name: str) -> None:
     snapshot_download(downloads[name], local_dir=models / name, token=os.environ.get("HF_TOKEN"))
+    if name == "parakeet":
+        # The worker loads via NeMo's from_pretrained(cache_dir=...), whose cache
+        # layout differs from a plain snapshot. Resolve through the same call at
+        # build time so the runtime load never reaches for the network.
+        from nemo.collections.asr.models import ASRModel
+        ASRModel.from_pretrained(
+            model_name=model_pins["parakeet"], cache_dir=models / name, return_config=True
+        )
 
 
 def finalize() -> None:
