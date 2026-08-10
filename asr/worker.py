@@ -131,8 +131,11 @@ def candidate_from_whisper(audio, model_dir, lane):
         source, root = str(model_dir), None
     else:
         source, root = WHISPER_REPOS[lane], str(model_dir.parent / "whisper_lazy")
-    model = _cached_model("whisper:" + lane, lambda: WhisperModel(source, device="cuda", compute_type="int8_float16", download_root=root))
-    segments, info = model.transcribe(str(audio), beam_size=5, vad_filter=True)
+    from faster_whisper import BatchedInferencePipeline
+    model = _cached_model("whisper:" + lane, lambda: BatchedInferencePipeline(WhisperModel(source, device="cuda", compute_type="int8_float16", download_root=root)))
+    # Turbo is distilled for greedy decoding; beam search multiplies decoder
+    # cost ~5x for no accuracy gain on this model.
+    segments, info = model.transcribe(str(audio), beam_size=1, vad_filter=True, batch_size=16)
     result = [{"start_seconds": segment.start, "end_seconds": segment.end, "text": segment.text.strip(), "confidence": float(getattr(segment, "avg_logprob", 0.0))} for segment in segments]
     confidence = min(1.0, max(0.0, (sum(s["confidence"] for s in result) / len(result) + 1) if result else 0.0))
     return {"lane": lane, "confidence": confidence, "segments": result, "language": getattr(info, "language", "")}
@@ -209,28 +212,55 @@ def parakeet_confidence(hypothesis):
         return None
 
 
+PARAKEET_CHUNK_SECONDS = 600
+
+
+def _split_audio(audio, chunk_seconds, workdir):
+    """Split long audio into fixed-length wav chunks Parakeet's full-attention
+    encoder can hold on a 24GB card (it tops out around ~24 min per utterance)."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(audio)],
+        capture_output=True, text=True)
+    duration = float(probe.stdout.strip() or 0)
+    if duration <= chunk_seconds:
+        return [(str(audio), 0.0)], duration
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(audio), "-f", "segment", "-segment_time", str(chunk_seconds),
+         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(workdir / "chunk_%04d.wav")],
+        check=True, capture_output=True)
+    chunks = sorted(workdir.glob("chunk_*.wav"))
+    return [(str(c), i * float(chunk_seconds)) for i, c in enumerate(chunks)], duration
+
+
 def candidate_from_parakeet(audio, models, lane, batch_size):
     import torch
-    pool = parakeet_pool(models)
-    instance = pool.checkout()
-    try:
-        with instance.lock:
-            with torch.cuda.stream(instance.stream):
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    hypotheses = instance.model.transcribe([str(audio)], batch_size=batch_size, timestamps=True, num_workers=0)
-    finally:
-        # A lane cannot be safely reused until all work submitted to its stream is done.
+    with tempfile.TemporaryDirectory() as tmp:
+        chunks, duration = _split_audio(audio, PARAKEET_CHUNK_SECONDS, Path(tmp))
+        paths = [path for path, _ in chunks]
+        pool = parakeet_pool(models)
+        instance = pool.checkout()
         try:
-            instance.stream.synchronize()
+            with instance.lock:
+                with torch.cuda.stream(instance.stream):
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        hypotheses = instance.model.transcribe(paths, batch_size=batch_size, timestamps=True, num_workers=0)
         finally:
-            pool.checkin(instance)
-    hypothesis = hypotheses[0]
-    text = hypothesis.text if hasattr(hypothesis, "text") else str(hypothesis)
-    measured = parakeet_confidence(hypothesis)
-    confidence = 0.8 if measured is None else measured
-    return {"lane": lane, "confidence": confidence, "confidence_measured": measured is not None, "segments": [
-        {"start_seconds": 0.0, "end_seconds": 0.0, "text": text.strip(), "confidence": confidence}
-    ], "language": ""}
+            # A lane cannot be safely reused until all work submitted to its stream is done.
+            try:
+                instance.stream.synchronize()
+            finally:
+                pool.checkin(instance)
+    segments, confidences = [], []
+    for hypothesis, (path, offset) in zip(hypotheses, chunks):
+        text = hypothesis.text if hasattr(hypothesis, "text") else str(hypothesis)
+        measured = parakeet_confidence(hypothesis)
+        confidence = 0.8 if measured is None else measured
+        confidences.append((confidence, measured is not None))
+        end = min(offset + PARAKEET_CHUNK_SECONDS, duration) if duration else 0.0
+        segments.append({"start_seconds": offset, "end_seconds": end, "text": text.strip(), "confidence": confidence})
+    overall = sum(c for c, _ in confidences) / len(confidences) if confidences else 0.0
+    return {"lane": lane, "confidence": overall, "confidence_measured": all(m for _, m in confidences) if confidences else False,
+            "segments": segments, "language": ""}
 
 
 def diarize(candidate, audio, models):
@@ -288,6 +318,10 @@ def transcribe_with_fallback(audio, lane, models, blocked, params=None, transcri
                         continue
                     raise
         except Exception:
+            import traceback
+            print(f"LANE_FAILED {lane}:", flush=True)
+            traceback.print_exc()
+            sys.stdout.flush()
             lane = FALLBACKS.get(lane)
     raise WorkerError("all ASR lanes failed")
 
