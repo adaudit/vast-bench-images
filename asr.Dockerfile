@@ -44,6 +44,11 @@ RUN python3 bake_models.py finalize && \
     test -s /opt/fixture-50min.wav && \
     python3 -c 'import torch; from nemo.collections.asr.models import ASRModel; print(torch.__version__)'
 
+# hf_transfer must be enabled before huggingface_hub is ever imported;
+# setting it at runtime in worker.py was too late (NeMo imports the hub
+# first and freezes the constant), leaving the slow single-stream http_get
+# path — 10+ min weight fetches that looked like hangs.
 ENV WORKSPACE_ROOT=/workspace \
-    PARAKEET_INSTANCES=3
+    PARAKEET_INSTANCES=3 \
+    HF_HUB_ENABLE_HF_TRANSFER=1
 CMD ["python3", "rp_handler.py"]
