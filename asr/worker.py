@@ -17,6 +17,19 @@ import urllib.request
 import re
 from pathlib import Path
 
+import numpy as np
+
+# NeMo's audio loader still reads np.sctypes, removed in NumPy 2.0; restore it
+# so int16 wav decoding doesn't AttributeError inside AudioSegment.from_file.
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [bool, object, bytes, str, np.void],
+    }
+
 MEDIA_TYPE = "application/vnd.adaudit.asr-candidate-v1+json"
 FALLBACKS = {
     "parakeet_dual": "whisper_turbo_fallback",
