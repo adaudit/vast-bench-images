@@ -217,7 +217,7 @@ def candidate_from_parakeet(audio, models, lane, batch_size):
         with instance.lock:
             with torch.cuda.stream(instance.stream):
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    hypotheses = instance.model.transcribe([str(audio)], batch_size=batch_size, timestamps=True)
+                    hypotheses = instance.model.transcribe([str(audio)], batch_size=batch_size, timestamps=True, num_workers=0)
     finally:
         # A lane cannot be safely reused until all work submitted to its stream is done.
         try:

@@ -23,9 +23,10 @@ RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pyt
 RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
       'nemo_toolkit[asr]==2.2.1'
 RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
-      whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3'
+      whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3,<13'
 RUN python3 -m pip install --no-cache-dir --no-deps --target /opt/cudnn8 'nvidia-cudnn-cu12==8.9.7.29' && \
-    python3 -c "import ctypes; ctypes.CDLL('/opt/cudnn8/nvidia/cudnn/lib/libcudnn_ops_infer.so.8')"
+    python3 -c "import ctypes; ctypes.CDLL('/opt/cudnn8/nvidia/cudnn/lib/libcudnn_ops_infer.so.8')" && \
+    python3 -c "from cuda import cuda, cudart"
 
 WORKDIR /workspace
 COPY asr/worker.py asr/rp_handler.py ./
