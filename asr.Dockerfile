@@ -6,12 +6,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 
 COPY asr/constraints.txt /tmp/constraints.txt
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
     python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
-      'nemo_toolkit[asr]==2.2.1' whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3' && \
+      'nemo_toolkit[asr]==2.2.1' whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3' 'nvidia-cudnn-cu12==8.9.7.29' && \
+    ln -s /opt/conda/lib/python3*/site-packages/nvidia/cudnn/lib/libcudnn*.so.8 /usr/lib/ 2>/dev/null; \
+    python3 -c "import ctypes; ctypes.CDLL('libcudnn_ops_infer.so.8')" && \
     apt-get purge -y --auto-remove build-essential pybind11-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 

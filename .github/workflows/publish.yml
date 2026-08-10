@@ -30,7 +30,7 @@ jobs:
         with:
           context: .
           file: asr.Dockerfile
-          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v5
+          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v6
           # zstd decompresses 3-5x faster than gzip on the host; needs a
           # containerd/docker 23+ puller, which the bench driver's host
           # rotation tolerates.
