@@ -21,11 +21,7 @@ downloads = {
 
 def bake(name: str) -> None:
     snapshot_download(downloads[name], local_dir=models / name, token=os.environ.get("HF_TOKEN"))
-    if name == "parakeet":
-        # The worker loads the .nemo directly via restore_from; the snapshot
-        # must contain exactly one.
-        nemo_files = list((models / name).glob("*.nemo"))
-        assert len(nemo_files) == 1, f"expected one .nemo in snapshot, got {nemo_files}"
+
 
 
 def finalize() -> None:

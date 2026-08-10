@@ -30,13 +30,11 @@ jobs:
         with:
           context: .
           file: asr.Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v2
-            ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v3
-            ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v4
-          secrets: |
-            hf_token=${{ secrets.HF_TOKEN }}
+          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr:v5
+          # zstd decompresses 3-5x faster than gzip on the host; needs a
+          # containerd/docker 23+ puller, which the bench driver's host
+          # rotation tolerates.
+          outputs: type=image,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,push=true
       - name: Build and publish diarization
         uses: docker/build-push-action@v6
         with:

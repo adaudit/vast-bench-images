@@ -145,16 +145,35 @@ def _cached_model(key, factory):
         return _MODELS[key]
 
 
+_PARAKEET_FETCH_LOCK = threading.Lock()
+
+
+def _parakeet_nemo(models):
+    """Return the local .nemo path, fetching it once from HF's CDN if absent.
+
+    Weights are not baked into the image: docker pulls of multi-GB layers are
+    the slowest, flakiest part of a cold start, while hf_transfer saturates the
+    host's link with parallel chunks and the file persists on disk for every
+    later container start on the host.
+    """
+    target = models / "parakeet"
+    with _PARAKEET_FETCH_LOCK:
+        baked = sorted(target.glob("*.nemo"))
+        if not baked:
+            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+            from huggingface_hub import snapshot_download
+            snapshot_download("nvidia/parakeet-tdt-0.6b-v2",
+                              local_dir=str(target), allow_patterns=["*.nemo"])
+            baked = sorted(target.glob("*.nemo"))
+        if not baked:
+            raise WorkerError("parakeet .nemo missing after HF fetch")
+    return baked[0]
+
+
 def _load_parakeet_instance(models):
     import torch
     from nemo.collections.asr.models import ASRModel
-    # NeMo's from_pretrained takes no cache_dir; load the baked .nemo directly
-    # so startup never reaches for the network.
-    baked = sorted((models / "parakeet").glob("*.nemo"))
-    if baked:
-        model = ASRModel.restore_from(str(baked[0]))
-    else:
-        model = ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
+    model = ASRModel.restore_from(str(_parakeet_nemo(models)))
     return ParakeetInstance(model, torch.cuda.Stream())
 
 
