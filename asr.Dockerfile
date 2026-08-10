@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY asr/constraints.txt /tmp/constraints.txt
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
     python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
-      'nemo_toolkit[asr]==2.2.1' whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 runpod==1.11.0 && \
+      'nemo_toolkit[asr]==2.2.1' whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 runpod==1.11.0 'cuda-python>=12.3' && \
     apt-get purge -y --auto-remove build-essential pybind11-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
