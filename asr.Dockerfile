@@ -10,13 +10,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LD_LIBRARY_PATH=/opt/cudnn8/nvidia/cudnn/lib
 
 COPY asr/constraints.txt /tmp/constraints.txt
+# Deliberately many small RUN layers, one dep cluster each: GHCR's CDN aborts
+# mid-transfer on multi-GB blobs to marketplace-host networks, and docker only
+# resumes per layer. Nine small layers pulled in ~25s while the one big pip
+# layer retried forever — so no single layer here should exceed ~1 GB.
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
-    python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
-      'nemo_toolkit[asr]==2.2.1' whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3' && \
-    python3 -m pip install --no-cache-dir --no-deps --target /opt/cudnn8 'nvidia-cudnn-cu12==8.9.7.29' && \
-    python3 -c "import ctypes; ctypes.CDLL('/opt/cudnn8/nvidia/cudnn/lib/libcudnn_ops_infer.so.8')" && \
-    apt-get purge -y --auto-remove build-essential pybind11-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
+      numpy scipy librosa soundfile pandas
+RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
+      transformers 'pytorch-lightning>=2.0' hydra-core omegaconf
+RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
+      'nemo_toolkit[asr]==2.2.1'
+RUN python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c /tmp/constraints.txt \
+      whisperx==3.3.1 faster-whisper==1.1.0 huggingface_hub==0.27.1 hf_transfer==0.1.9 runpod==1.11.0 'cuda-python>=12.3'
+RUN python3 -m pip install --no-cache-dir --no-deps --target /opt/cudnn8 'nvidia-cudnn-cu12==8.9.7.29' && \
+    python3 -c "import ctypes; ctypes.CDLL('/opt/cudnn8/nvidia/cudnn/lib/libcudnn_ops_infer.so.8')"
 
 WORKDIR /workspace
 COPY asr/worker.py asr/rp_handler.py ./
