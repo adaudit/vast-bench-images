@@ -225,7 +225,7 @@ def parakeet_confidence(hypothesis):
         return None
 
 
-PARAKEET_CHUNK_SECONDS = 600
+PARAKEET_CHUNK_SECONDS = 120
 
 
 def _split_audio(audio, chunk_seconds, workdir):
