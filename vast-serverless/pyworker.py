@@ -44,7 +44,10 @@ worker_config = WorkerConfig(
     ],
     log_action_config=LogActionConfig(
         on_load=[MODEL_LOADED_MARKER],
-        on_error=["LANE_FAILED", "TRANSCRIBE_FAILED", "Traceback (most recent call last)"],
+        # Only OUR explicit error markers — NOT a generic "Traceback", which NeMo
+        # prints benignly during model restore and would false-positive-kill the
+        # worker mid-load (before the ~112s warm even completes).
+        on_error=["LANE_FAILED", "TRANSCRIBE_FAILED"],
     ),
 )
 
