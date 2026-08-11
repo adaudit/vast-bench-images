@@ -35,6 +35,13 @@ jobs:
           # containerd/docker 23+ puller, which the bench driver's host
           # rotation tolerates.
           outputs: type=image,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,push=true
+      - name: Build and publish ASR serverless (Vast PyWorker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: serverless.Dockerfile
+          tags: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless:v1
+          outputs: type=image,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,push=true
       - name: Build and publish diarization
         uses: docker/build-push-action@v6
         with:
