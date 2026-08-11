@@ -37,6 +37,7 @@ worker_config = WorkerConfig(
             benchmark_config=BenchmarkConfig(
                 dataset=[{"audio_url": BENCHMARK_AUDIO_URL, "lane": "parakeet_dual", "params": {}}],
                 runs=1,
+                do_warmup=False,
             ),
             # Non-LLM constant cost per request (perf units).
             workload_calculator=lambda _: 1000.0,

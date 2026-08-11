@@ -332,6 +332,13 @@ if ! cd "$SERVER_DIR"; then
     report_error_and_exit "Failed to cd into SERVER_DIR: $SERVER_DIR"
 fi
 
+echo "starting ASR model server on 127.0.0.1:${MODEL_SERVER_PORT} (log: ${MODEL_LOG})"
+(
+    cd "$WORKSPACE_DIR"
+    python3 -u -m uvicorn server:app --host 127.0.0.1 --port "$MODEL_SERVER_PORT" 2>&1 \
+      | tee -a "$MODEL_LOG" | sed 's/^/[model-server] /'
+) &
+
 echo "launching PyWorker server"
 
 set +e

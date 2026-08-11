@@ -10,12 +10,5 @@ export MODEL_SERVER_PORT="${MODEL_SERVER_PORT:-18100}"
 export MODEL_LOG="${MODEL_LOG:-/workspace/model-server.log}"
 
 : > "$MODEL_LOG"
-echo "starting ASR model server on 127.0.0.1:${MODEL_SERVER_PORT} (log: ${MODEL_LOG})"
-cd /workspace
-# tee to BOTH the file (pyworker watches it for the ready marker) AND stdout,
-# so the model-server startup/traceback shows in the Vast container log.
-python3 -u -m uvicorn server:app --host 127.0.0.1 --port "$MODEL_SERVER_PORT" 2>&1 \
-  | tee -a "$MODEL_LOG" | sed 's/^/[model-server] /' &
-
 echo "handing off to Vast pyworker bootstrap"
 exec bash "$WORKSPACE_DIR/vast-pyworker/start_server.sh"
