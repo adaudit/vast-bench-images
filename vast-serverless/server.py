@@ -40,7 +40,10 @@ class TranscribeRequest(BaseModel):
 @app.on_event("startup")
 def _startup():
     manifest = json.loads((ROOT / "model-pins.json").read_text())
-    worker.validate_baked_models(MODELS, manifest)
+    # NOTE: no validate_baked_models() here — that gate is for the RunPod image,
+    # which bakes weights in. This image (vast-bench-asr) deliberately ships
+    # WITHOUT weights and fetches Parakeet from HF during warm; whisper fallback
+    # lanes lazy-download only if they fire.
     worker.warm_parakeet_pool(MODELS)
     _state["blocked"] = set(manifest.get("blocked_lanes", []))
     _state["ready"] = True
