@@ -1,0 +1,4 @@
+antlr4-python3-runtime==4.9.3 --hash=sha256:ffb51877578142e5df83abad6f59eed91050c79e4b4fc511dc12f3effddaddc6
+docopt==0.6.2 --hash=sha256:29337262a1df23fc659c6049e9faf14583db18214738b568b3d8d08d97997a09
+texterrors==0.4.4 --hash=sha256:5733c1565f1c21bb83aaed38d7a1ccf9c4a7e293b37ca5c5f32263dea89724e8
+wget==3.2 --hash=sha256:8aa600c90be39cbdf1c2baf9258d4b6fa24d418a4bed5b3ab7d1c21c38736d2d
