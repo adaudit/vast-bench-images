@@ -1,0 +1,42 @@
+name: Publish Parakeet v3 ASR candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  publish-asr-v3:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+      - name: Scan exact source
+        run: osv-scanner scan source --recursive .
+      - name: Refuse an occupied candidate tag before login
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr
+          TAG: candidate-${{ github.sha }}
+        run: '! docker buildx imagetools inspect "$IMAGE:$TAG"'
+      - name: Login to GHCR
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build one immutable ASR candidate
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr
+          TAG: candidate-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ! docker buildx imagetools inspect "$IMAGE:$TAG"
+          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --build-arg SOURCE_SHA="${{ github.sha }}" --metadata-file metadata.json -f asr-v3.Dockerfile -t "$IMAGE:$TAG" .
+          digest="$(jq -r '."containerimage.digest"' metadata.json)"
+          test "$digest" != null
+          osv-scanner scan image "$IMAGE@$digest"
+          docker buildx imagetools inspect "$IMAGE@$digest"

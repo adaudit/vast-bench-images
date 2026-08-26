@@ -1,0 +1,5 @@
+# Network resolution is intentionally deferred until Socket Firewall Free is available.
+nemo_toolkit[asr]==2.4.1
+# NeMo's ASR extra requires texterrors<1.0.0; its audited CPython 3.11 wheel is local.
+texterrors==0.4.4
+pybind11==2.13.6
