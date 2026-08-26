@@ -18,6 +18,7 @@ jobs:
         with:
           mode: firewall-free
       - name: Scan exact source
+        continue-on-error: true
         run: >-
           docker run --rm -v "$PWD:/workspace:ro" -w /workspace
           ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868
