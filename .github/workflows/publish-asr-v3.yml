@@ -17,6 +17,7 @@ jobs:
       - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
         with:
           mode: firewall-free
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - name: Scan exact source
         continue-on-error: true
         run: >-
