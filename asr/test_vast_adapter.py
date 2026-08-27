@@ -17,11 +17,20 @@ class VastAdapterTest(unittest.TestCase):
         SERVER_SPEC.loader.exec_module(server)
         runtime = server.Runtime(
             model_verifier=lambda _: None,
+            model_loader=lambda: object(),
             transcriber=lambda request: [{"start_seconds": 0, "end_seconds": request.audio_duration_seconds, "text": "ok", "confidence": .9}],
         )
         runtime.check_ready()
         payload = {"request_version": adapter.REQUEST_VERSION, "lane": adapter.LANE, "model_id": adapter.MODEL_ID, "model_revision": adapter.MODEL_REVISION, "audio_filename": "sample.wav", "audio_duration_seconds": 1, "audio_base64": base64.b64encode(b"RIFFtest").decode()}
         self.assertEqual(runtime.transcribe(payload)["segments"][0]["text"], "ok")
+
+    def test_batch_loads_once_and_keeps_input_order(self):
+        server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
+        loads, calls = [], []
+        runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or object(), batch_transcriber=lambda requests: calls.append(len(requests)) or [[{"start_seconds": 0, "end_seconds": r.audio_duration_seconds, "text": r.audio_filename, "confidence": .9}] for r in requests])
+        payload = lambda name: {"request_version": adapter.REQUEST_VERSION, "lane": adapter.LANE, "model_id": adapter.MODEL_ID, "model_revision": adapter.MODEL_REVISION, "audio_filename": name, "audio_duration_seconds": 1, "audio_base64": base64.b64encode(b"RIFFtest").decode()}
+        got = runtime.transcribe_batch([payload("a.wav"), payload("b.wav")])
+        self.assertEqual((loads, calls, [x["segments"][0]["text"] for x in got]), ([1], [2], ["a.wav", "b.wav"]))
     def test_request_keeps_short_audio_as_one_chunk(self):
         request = adapter.parse_request({
             "request_version": adapter.REQUEST_VERSION,

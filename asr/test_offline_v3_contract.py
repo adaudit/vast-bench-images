@@ -18,8 +18,9 @@ class OfflineV3ContractTest(unittest.TestCase):
         dockerfile = (ROOT / "asr-v3.Dockerfile").read_text()
         self.assertIn("COPY asr/vast_adapter.py /workspace/vast_adapter.py", dockerfile)
         self.assertIn("COPY asr/server.py /workspace/server.py", dockerfile)
-        self.assertIn("ENTRYPOINT [\"python3\", \"/workspace/server.py\"]", dockerfile)
         self.assertIn("pip install --no-deps --no-index --find-links /bootstrap --require-hashes", dockerfile)
+        self.assertIn("COPY asr/drain_worker.py /workspace/drain_worker.py", dockerfile)
+        self.assertIn("ENTRYPOINT [\"python3\", \"/workspace/drain_worker.py\"]", dockerfile)
         self.assertIn("ADD --checksum=sha256:" + offline.MODEL_SHA256, dockerfile)
         self.assertNotIn("COPY vendor/models", dockerfile)
         for wheel in (
