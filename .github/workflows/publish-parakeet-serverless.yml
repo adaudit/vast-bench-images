@@ -1,0 +1,22 @@
+name: Publish one immutable Parakeet serverless image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish exact-SHA derivative
+        env:
+          IMAGE: ghcr.io/adaudit/vast-bench-asr-serverless:parakeet-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --push --tag "$IMAGE" -f asr/vast-serverless.Dockerfile .
+          docker buildx imagetools inspect "$IMAGE"
