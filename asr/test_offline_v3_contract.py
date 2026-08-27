@@ -92,6 +92,9 @@ class OfflineV3ContractTest(unittest.TestCase):
             self.assertNotIn(excluded, source)
         workflow = (ROOT / ".github" / "workflows" / "publish-asr-v3.yml").read_text()
         self.assertIn("candidate-${{ github.sha }}", workflow)
+        buildx_setup = "docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435"
+        self.assertIn(buildx_setup, workflow)
+        self.assertIn("driver: docker-container", workflow)
         self.assertIn('docker pull "$IMAGE@$digest"', workflow)
         self.assertIn('docker save "$IMAGE@$digest" -o image.tar', workflow)
         self.assertIn("scan image --archive /workspace/image.tar", workflow)
@@ -101,6 +104,7 @@ class OfflineV3ContractTest(unittest.TestCase):
         self.assertIn('exit "$osv_status"', workflow)
         self.assertNotIn("/usr/bin/docker", workflow)
         build_step = workflow.split("name: Build one immutable ASR candidate", 1)[1]
+        self.assertLess(workflow.index(buildx_setup), workflow.index("name: Build one immutable ASR candidate"))
         self.assertIn("set -euo pipefail", build_step)
         self.assertNotIn("continue-on-error", build_step)
         self.assertLess(build_step.index('docker pull "$IMAGE@$digest"'), build_step.index('docker save "$IMAGE@$digest"'))
