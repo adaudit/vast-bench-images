@@ -18,6 +18,7 @@ COPY asr/server.py /workspace/server.py
 COPY asr/schemas/asr-candidate-v2.schema.json /workspace/asr-candidate-v2.schema.json
 COPY asr/fixtures/parakeet-v3-calibration.jsonl /workspace/parakeet-v3-calibration.jsonl
 RUN python3 -c "import hashlib, pathlib; p=pathlib.Path('/workspace/models/parakeet-tdt-0.6b-v3.nemo'); assert p.stat().st_size == 2509332480; assert hashlib.sha256(p.read_bytes()).hexdigest() == '3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d'"
+RUN chmod 0444 /workspace/models/parakeet-tdt-0.6b-v3.nemo
 RUN mkdir /workspace/input /workspace/output && chown 65532:65532 /workspace/output
 USER 65532:65532
 ENTRYPOINT ["python3", "/workspace/server.py"]

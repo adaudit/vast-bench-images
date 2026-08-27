@@ -84,21 +84,34 @@ def verify_model(path):
         raise ContractError("baked model checksum mismatch")
 
 
-def decode_with_nemo(model_path, audio_path):
-    from nemo.collections.asr.models import ASRModel
-
-    model = ASRModel.restore_from(str(model_path))
-    result = model.transcribe([str(audio_path)], timestamps=True)[0]
-    words = getattr(result, "timestamp", {}).get("word", [])
-    if not isinstance(words, list) or not words:
+def extract_aligned_words(result):
+    timestamp = getattr(result, "timestamp", None)
+    words = timestamp.get("word") if isinstance(timestamp, dict) else None
+    confidences = getattr(result, "word_confidence", None)
+    if not isinstance(words, list) or not words or not isinstance(confidences, list) or len(confidences) != len(words):
         raise ContractError("model produced no aligned word evidence")
     segments = []
-    for word in words:
-        text, start, end, confidence = word.get("word"), word.get("start"), word.get("end"), word.get("confidence")
+    for word, confidence in zip(words, confidences):
+        if not isinstance(word, dict):
+            raise ContractError("model produced invalid aligned word evidence")
+        text, start, end = word.get("word"), word.get("start"), word.get("end")
         if not isinstance(text, str) or not text.strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or not 0 <= confidence <= 1:
             raise ContractError("model produced invalid aligned word evidence")
         segments.append({"start_seconds": start, "end_seconds": end, "text": text.strip(), "confidence": confidence})
     return segments
+
+
+def decode_with_nemo(model_path, audio_path):
+    from nemo.collections.asr.models import ASRModel
+    from omegaconf import open_dict
+
+    model = ASRModel.restore_from(str(model_path))
+    with open_dict(model.cfg.decoding):
+        model.cfg.decoding.compute_timestamps = True
+        model.cfg.decoding.preserve_alignments = True
+        model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
+    model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+    return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
 
 
 def build_candidate(duration, segments):

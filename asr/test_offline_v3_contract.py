@@ -3,6 +3,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,18 @@ class OfflineV3ContractTest(unittest.TestCase):
         ])
         self.assertEqual(candidate["selected_segment_indexes"], [1])
         self.assertEqual(candidate["calibration"]["segment_evidence"][1]["timestamp_end_seconds"], 2)
+
+    def test_extracts_real_nemo_word_timestamps_and_parallel_confidence(self):
+        result = SimpleNamespace(
+            timestamp={"word": [{"word": "accepted", "start": 0.0, "end": 1.0}, {"word": "selected", "start": 1.0, "end": 2.0}]},
+            word_confidence=[.9, .4],
+        )
+        self.assertEqual(offline.extract_aligned_words(result), [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "text": "accepted", "confidence": .9},
+            {"start_seconds": 1.0, "end_seconds": 2.0, "text": "selected", "confidence": .4},
+        ])
+        with self.assertRaises(offline.ContractError):
+            offline.extract_aligned_words(SimpleNamespace(timestamp=result.timestamp, word_confidence=[.9]))
 
     def test_request_rejects_url_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
