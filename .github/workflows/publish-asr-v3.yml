@@ -43,5 +43,5 @@ jobs:
           docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --build-arg SOURCE_SHA="${{ github.sha }}" --metadata-file metadata.json -f asr-v3.Dockerfile -t "$IMAGE:$TAG" .
           digest="$(jq -r '."containerimage.digest"' metadata.json)"
           test "$digest" != null
-          osv-scanner scan image "$IMAGE@$digest"
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$HOME/.docker:/root/.docker:ro" ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image "$IMAGE@$digest"
           docker buildx imagetools inspect "$IMAGE@$digest"
