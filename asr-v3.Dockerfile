@@ -10,7 +10,7 @@ COPY vendor/wheelhouses/parakeet-v3/antlr4_python3_runtime-4.9.3-py3-none-any.wh
 COPY vendor/wheelhouses/parakeet-v3/docopt-0.6.2-py2.py3-none-any.whl /bootstrap/
 COPY vendor/wheelhouses/parakeet-v3/texterrors-0.4.4-cp311-cp311-linux_x86_64.whl /bootstrap/
 COPY vendor/wheelhouses/parakeet-v3/wget-3.2-py3-none-any.whl /bootstrap/
-RUN python3 -m pip uninstall -y ninja && python3 -m pip install --no-index --find-links /bootstrap --require-hashes -r /locks/parakeet-v3.bootstrap.requirements.txt && PIP_NO_INDEX=0 python3 -m pip install --require-hashes -r /locks/parakeet-v3.requirements.txt && python3 -m pip check
+RUN python3 -m pip uninstall -y ninja && python3 -m pip install --no-deps --no-index --find-links /bootstrap --require-hashes -r /locks/parakeet-v3.bootstrap.requirements.txt && PIP_NO_INDEX=0 python3 -m pip install --require-hashes -r /locks/parakeet-v3.requirements.txt && python3 -m pip check
 ADD --checksum=sha256:3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo /workspace/models/parakeet-tdt-0.6b-v3.nemo
 COPY asr/offline_entrypoint.py /workspace/offline_entrypoint.py
 COPY asr/vast_adapter.py /workspace/vast_adapter.py
@@ -18,6 +18,7 @@ COPY asr/server.py /workspace/server.py
 COPY asr/schemas/asr-candidate-v2.schema.json /workspace/asr-candidate-v2.schema.json
 COPY asr/fixtures/parakeet-v3-calibration.jsonl /workspace/parakeet-v3-calibration.jsonl
 RUN python3 -c "import hashlib, pathlib; p=pathlib.Path('/workspace/models/parakeet-tdt-0.6b-v3.nemo'); assert p.stat().st_size == 2509332480; assert hashlib.sha256(p.read_bytes()).hexdigest() == '3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d'"
+RUN chmod 0444 /workspace/models/parakeet-tdt-0.6b-v3.nemo
 RUN mkdir /workspace/input /workspace/output && chown 65532:65532 /workspace/output
 USER 65532:65532
 ENTRYPOINT ["python3", "/workspace/server.py"]
