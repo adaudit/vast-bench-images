@@ -20,6 +20,19 @@ jobs:
       - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
         with:
           mode: firewall-free
+      - name: Scan exact source
+        run: |
+          set -euo pipefail
+          if docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan --recursive .; then
+            osv_status=0
+          else
+            osv_status=$?
+          fi
+          if [ "$osv_status" -eq 1 ]; then
+            echo "OSV scanner reported known vulnerabilities; continuing by release policy."
+          elif [ "$osv_status" -ne 0 ]; then
+            exit "$osv_status"
+          fi
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
@@ -44,16 +57,37 @@ jobs:
             --wheel-dir vendor/wheelhouses/parakeet-v3 \
             /workspace/.ci/antlr4-python3-runtime-4.9.3.tar.gz
           echo "ffb51877578142e5df83abad6f59eed91050c79e4b4fc511dc12f3effddaddc6  vendor/wheelhouses/parakeet-v3/antlr4_python3_runtime-4.9.3-py3-none-any.whl" | sha256sum --check --strict
-          grep -v '^antlr4-python3-runtime==' locks/parakeet-v3.requirements.txt > /tmp/parakeet-v3.requirements.txt
-          grep -v '^antlr4-python3-runtime==' locks/parakeet-v3.bootstrap.requirements.txt > /tmp/parakeet-v3.bootstrap.requirements.txt
-          python -m pip download --no-deps --require-hashes \
-            --find-links vendor/wheelhouses/parakeet-v3 \
-            --dest vendor/wheelhouses/parakeet-v3 \
-            -r /tmp/parakeet-v3.requirements.txt
-          python -m pip download --no-deps --require-hashes \
-            --find-links vendor/wheelhouses/parakeet-v3 \
-            --dest vendor/wheelhouses/parakeet-v3 \
-            -r /tmp/parakeet-v3.bootstrap.requirements.txt
+          python - locks/parakeet-v3.artifacts.json vendor/wheelhouses/parakeet-v3 \
+            --local-wheel vendor/wheelhouses/parakeet-v3/docopt-0.6.2-py2.py3-none-any.whl \
+            --local-wheel vendor/wheelhouses/parakeet-v3/texterrors-0.4.4-cp311-cp311-linux_x86_64.whl \
+            --local-wheel vendor/wheelhouses/parakeet-v3/wget-3.2-py3-none-any.whl <<'PY'
+          import argparse, hashlib, json, shutil, urllib.request
+          from pathlib import Path
+          p = argparse.ArgumentParser()
+          p.add_argument('manifest', type=Path)
+          p.add_argument('wheelhouse', type=Path)
+          p.add_argument('--local-wheel', action='append', type=Path, default=[])
+          a = p.parse_args()
+          local = {wheel.name: wheel for wheel in a.local_wheel}
+          wheels = json.loads(a.manifest.read_text())['wheels']
+          assert len(wheels) == 166
+          for item in wheels:
+              destination = a.wheelhouse / item['filename']
+              if item['filename'] in local:
+                  source = local[item['filename']]
+                  if source != destination:
+                      shutil.copyfile(source, destination)
+              elif not destination.exists():
+                  if not item['source'].startswith('https://'):
+                      raise SystemExit(f"missing local wheel: {item['filename']}")
+                  with urllib.request.urlopen(item['source'], timeout=120) as response, destination.open('wb') as output:
+                      shutil.copyfileobj(response, output)
+              if hashlib.sha256(destination.read_bytes()).hexdigest() != item['sha256']:
+                  raise SystemExit(f"hash mismatch: {item['filename']}")
+          PY
+          python -m venv .ci/offline-venv
+          .ci/offline-venv/bin/pip install --no-index --find-links vendor/wheelhouses/parakeet-v3 --require-hashes -r locks/parakeet-v3.requirements.txt
+          .ci/offline-venv/bin/pip check
           curl --fail --location --retry 3 \
             --header "Authorization: Bearer $HF_TOKEN" \
             --output vendor/models/parakeet-tdt-0.6b-v3.nemo \
