@@ -112,10 +112,13 @@ jobs:
             -t "$image:candidate-$SOURCE_SHA" .
           digest="$(jq -r '."containerimage.digest"' image-metadata.json)"
           test "$digest" != null
-          manifest="$(docker buildx imagetools inspect --raw "$image@$digest")"
-          compressed_bytes="$(printf '%s' "$manifest" | jq '[.layers[]?.size // 0] | add // 0')"
+          index="$(docker buildx imagetools inspect --raw "$image@$digest")"
+          platform_digest="$(printf '%s' "$index" | jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest] | if length == 1 then .[0] else error("expected exactly one linux/amd64 manifest") end')"
+          platform_manifest="$(docker buildx imagetools inspect --raw "$image@$platform_digest")"
+          compressed_bytes="$(printf '%s' "$platform_manifest" | jq -er '[.layers[] | if (.size | type) == "number" then .size else error("non-numeric layer size") end] | if length > 0 then add else error("missing platform layers") end')"
           test "$compressed_bytes" -le 5368709120
           {
             printf 'Image: `%s@%s`\n\n' "$image" "$digest"
-            printf 'Compressed manifest layers: `%s` bytes\n' "$compressed_bytes"
+            printf 'linux/amd64 manifest: `%s`\n' "$platform_digest"
+            printf 'Compressed amd64 manifest layers: `%s` bytes\n' "$compressed_bytes"
           } >> "$GITHUB_STEP_SUMMARY"

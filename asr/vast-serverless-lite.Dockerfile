@@ -24,11 +24,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY --from=deps /opt/venv /opt/venv
-COPY vendor/models/parakeet-tdt-0.6b-v3.nemo /workspace/models/parakeet-tdt-0.6b-v3.nemo
+COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo /workspace/models/parakeet-tdt-0.6b-v3.nemo
 COPY asr/offline_entrypoint.py asr/vast_adapter.py asr/server.py /workspace/
 COPY asr/vast-pyworker.py /workspace/vast-pyworker/worker.py
 COPY asr/vast-entrypoint.sh /workspace/vast-entrypoint.sh
 RUN python -c "import hashlib, pathlib; p=pathlib.Path('/workspace/models/parakeet-tdt-0.6b-v3.nemo'); assert p.stat().st_size == 2509332480; assert hashlib.sha256(p.read_bytes()).hexdigest() == '3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d'" \
- && chmod 0444 /workspace/models/parakeet-tdt-0.6b-v3.nemo \
  && chmod +x /workspace/vast-entrypoint.sh
 ENTRYPOINT ["/workspace/vast-entrypoint.sh"]
