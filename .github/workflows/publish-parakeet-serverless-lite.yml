@@ -20,16 +20,19 @@ jobs:
       - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
         with:
           mode: firewall-free
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
       - name: Materialize hash-locked build context
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p vendor/wheelhouses/parakeet-v3 vendor/models
-          python3 -m pip download --no-deps --require-hashes \
+          python -m pip download --no-deps --require-hashes \
             --dest vendor/wheelhouses/parakeet-v3 \
             -r locks/parakeet-v3.requirements.txt
-          python3 -m pip download --no-deps --require-hashes \
+          python -m pip download --no-deps --require-hashes \
             --dest vendor/wheelhouses/parakeet-v3 \
             -r locks/parakeet-v3.bootstrap.requirements.txt
           curl --fail --location --retry 3 \
