@@ -86,6 +86,7 @@ jobs:
                   raise SystemExit(f"hash mismatch: {item['filename']}")
           PY
           python -m venv .ci/offline-venv
+          .ci/offline-venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch==2.5.1+cu124 torchaudio==2.5.1+cu124
           .ci/offline-venv/bin/pip install --no-index --find-links vendor/wheelhouses/parakeet-v3 --require-hashes -r locks/parakeet-v3.requirements.txt
           .ci/offline-venv/bin/pip check
           curl --fail --location --retry 3 \
