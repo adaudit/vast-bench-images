@@ -1,5 +1,7 @@
 import base64
+import os
 import runpy
+import subprocess
 import sys
 import unittest
 import wave
@@ -87,6 +89,18 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertIn("urllib.request", entrypoint)
         self.assertNotIn("curl --fail", entrypoint)
         self.assertIn("WORKER_PORT", entrypoint)
+
+    def test_startup_timeout_accepts_a_quoted_number_in_sh(self):
+        entrypoint = (ROOT / "asr" / "vast-entrypoint.sh").read_text()
+        prefix = "\n".join(entrypoint.splitlines()[:6])
+        result = subprocess.run(
+            ["/bin/sh", "-c", prefix + "\nprintf '%s\\n' \"$deadline\""],
+            env={**os.environ, "STARTUP_TIMEOUT_SECONDS": '"300"'},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.strip().isdigit())
 
     def test_minimal_benchmark_wav_is_valid(self):
         namespace = self._load_worker("benchmark_fixture")

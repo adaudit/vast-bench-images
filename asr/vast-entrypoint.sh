@@ -2,7 +2,8 @@
 set -eu
 
 log=/workspace/parakeet-server.log
-deadline=$(( $(date +%s) + "${STARTUP_TIMEOUT_SECONDS:-300}" ))
+startup_timeout=${STARTUP_TIMEOUT_SECONDS:-300}; startup_timeout=${startup_timeout#\"}; startup_timeout=${startup_timeout%\"}
+deadline=$(( $(date +%s) + startup_timeout ))
 report_addr="${REPORT_ADDR:-https://run.vast.ai}"
 
 report_error_and_exit() {
