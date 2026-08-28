@@ -1,0 +1,61 @@
+name: Publish Parakeet serverless lite image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
+        with:
+          mode: firewall-free
+      - name: Materialize hash-locked build context
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p vendor/wheelhouses/parakeet-v3 vendor/models
+          python3 -m pip download --no-deps --require-hashes \
+            --dest vendor/wheelhouses/parakeet-v3 \
+            -r locks/parakeet-v3.requirements.txt
+          python3 -m pip download --no-deps --require-hashes \
+            --dest vendor/wheelhouses/parakeet-v3 \
+            -r locks/parakeet-v3.bootstrap.requirements.txt
+          curl --fail --location --retry 3 \
+            --header "Authorization: Bearer $HF_TOKEN" \
+            --output vendor/models/parakeet-tdt-0.6b-v3.nemo \
+            https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo
+          echo "3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d  vendor/models/parakeet-tdt-0.6b-v3.nemo" | sha256sum --check --strict
+      - name: Login to GHCR
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, publish, and verify immutable image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$OWNER/vast-bench-parakeet-serverless-lite"
+          docker buildx build --platform linux/amd64 --push \
+            --provenance=mode=max --sbom=true \
+            --metadata-file image-metadata.json \
+            -f asr/vast-serverless-lite.Dockerfile \
+            -t "$image:candidate-$SOURCE_SHA" .
+          digest="$(jq -r '."containerimage.digest"' image-metadata.json)"
+          test "$digest" != null
+          manifest="$(docker buildx imagetools inspect --raw "$image@$digest")"
+          compressed_bytes="$(printf '%s' "$manifest" | jq '[.layers[]?.size // 0] | add // 0')"
+          test "$compressed_bytes" -le 5368709120
+          {
+            printf 'Image: `%s@%s`\n\n' "$image" "$digest"
+            printf 'Compressed manifest layers: `%s` bytes\n' "$compressed_bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
