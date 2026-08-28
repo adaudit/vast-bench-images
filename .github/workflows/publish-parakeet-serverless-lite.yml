@@ -2,6 +2,9 @@ name: Publish Parakeet serverless lite image
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - publish/parakeet-serverless-lite-20260828
 
 permissions:
   contents: read
