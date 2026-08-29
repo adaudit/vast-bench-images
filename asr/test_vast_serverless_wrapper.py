@@ -1,13 +1,17 @@
 import base64
+import json
 import os
 import runpy
 import subprocess
 import sys
+import tempfile
+import threading
 import unittest
-import wave
-from io import BytesIO
+import urllib.request
 from pathlib import Path
 from types import ModuleType
+
+from asr import server
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +19,11 @@ WORKER = ROOT / "asr" / "vast-pyworker.py"
 
 
 class VastServerlessWrapperTest(unittest.TestCase):
+    def _benchmark_env(self):
+        directory = tempfile.TemporaryDirectory()
+        artifact = ROOT / "asr" / "fixtures" / "audio" / "2086-149220-0033.wav"
+        return directory, {"VAST_BENCHMARK_ARTIFACT": str(artifact)}
+
     def _load_worker(self, run_name):
         fake = ModuleType("vastai")
         fake.BenchmarkConfig = lambda **kwargs: type("Benchmark", (), {"kwargs": kwargs})()
@@ -56,11 +65,14 @@ class VastServerlessWrapperTest(unittest.TestCase):
         fake = ModuleType("vastai")
         fake.BenchmarkConfig, fake.HandlerConfig = BenchmarkConfig, HandlerConfig
         fake.Worker, fake.WorkerConfig, fake.LogActionConfig = Worker, WorkerConfig, LogActionConfig
-        previous = sys.modules.get("vastai")
+        previous, env = sys.modules.get("vastai"), os.environ.copy()
         sys.modules["vastai"] = fake
+        directory, additions = self._benchmark_env(); os.environ.update(additions)
         try:
             runpy.run_path(str(WORKER), run_name="__main__")
+            payload = captured["handler"].kwargs["benchmark_config"].kwargs["generator"]()
         finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
             if previous is None: sys.modules.pop("vastai", None)
             else: sys.modules["vastai"] = previous
 
@@ -70,7 +82,6 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertFalse(handler["allow_parallel_requests"])
         self.assertEqual(benchmark["runs"], 1)
         self.assertFalse(benchmark["do_warmup"])
-        payload = benchmark["generator"]()
         request = payload["requests"][0]
         self.assertEqual(set(request), {"request_version", "lane", "model_id", "model_revision", "audio_filename", "audio_duration_seconds", "audio_base64"})
         self.assertTrue(base64.b64decode(request["audio_base64"]).startswith(b"RIFF"))
@@ -81,6 +92,7 @@ class VastServerlessWrapperTest(unittest.TestCase):
         entrypoint = (ROOT / "asr" / "vast-entrypoint.sh").read_text()
         self.assertIn("USER root", dockerfile)
         self.assertIn("python3 -m pip check", dockerfile)
+        self.assertIn('python3 -I -c "import vastai"', dockerfile)
         self.assertLess(dockerfile.index("RUN chmod"), dockerfile.index("ENTRYPOINT"))
         self.assertNotIn("USER 65532", dockerfile)
         self.assertIn("openssl req", entrypoint)
@@ -102,12 +114,32 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result.stdout.strip().isdigit())
 
-    def test_minimal_benchmark_wav_is_valid(self):
+    def test_benchmark_requires_the_approved_wav(self):
         namespace = self._load_worker("benchmark_fixture")
-        payload = namespace["benchmark_payload"]()
-        audio = base64.b64decode(payload["requests"][0]["audio_base64"])
-        with wave.open(BytesIO(audio)) as source:
-            self.assertEqual((source.getframerate(), source.getnchannels(), source.getsampwidth()), (16000, 1, 2))
+        with tempfile.NamedTemporaryFile() as artifact:
+            artifact.write(b"RIFFnot-approved"); artifact.flush()
+            env = os.environ.copy(); os.environ["VAST_BENCHMARK_ARTIFACT"] = artifact.name
+            try:
+                with self.assertRaises(RuntimeError): namespace["benchmark_payload"]()
+            finally:
+                os.environ.clear(); os.environ.update(env)
+
+    def test_approved_benchmark_reaches_public_http_contract(self):
+        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
+        try:
+            payload = self._load_worker("approved_benchmark")["benchmark_payload"]()
+        finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
+        runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: None, batch_transcriber=lambda _: [[{"start_seconds": 0, "end_seconds": 1, "text": "fixture", "confidence": .9}]])
+        http = server.make_server(("127.0.0.1", 0), runtime)
+        thread = threading.Thread(target=http.serve_forever); thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request) as response:
+                body = json.loads(response.read())
+        finally:
+            http.shutdown(); thread.join(); http.server_close()
+        self.assertEqual((body[0]["schema_version"], body[0]["disposition"], body[0]["segments"][0]["text"]), ("asr-candidate-v3", "speech", "fixture"))
 
 
 if __name__ == "__main__":
