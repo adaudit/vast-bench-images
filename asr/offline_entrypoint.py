@@ -7,7 +7,7 @@ import math
 import os
 from pathlib import Path
 
-SCHEMA_VERSION = "asr-candidate-v2"
+SCHEMA_VERSION = "asr-candidate-v3"
 REQUEST_VERSION = "parakeet-v3-offline-request-v1"
 LANE = "parakeet_v3"
 MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
@@ -88,8 +88,10 @@ def extract_aligned_words(result):
     timestamp = getattr(result, "timestamp", None)
     words = timestamp.get("word") if isinstance(timestamp, dict) else None
     confidences = getattr(result, "word_confidence", None)
-    if not isinstance(words, list) or not words or not isinstance(confidences, list) or len(confidences) != len(words):
+    if not isinstance(words, list) or not isinstance(confidences, list) or len(confidences) != len(words):
         raise ContractError("model produced no aligned word evidence")
+    if not words:
+        return []
     segments = []
     for word, confidence in zip(words, confidences):
         if not isinstance(word, dict):
@@ -115,19 +117,21 @@ def decode_with_nemo(model_path, audio_path):
 
 
 def build_candidate(duration, segments):
+    # A decoder may legitimately find no words in a tiny retained VAD fragment.
+    # Missing or malformed evidence remains a ContractError above.
+    if segments == []:
+        return {"schema_version": SCHEMA_VERSION, "disposition": "no_speech", "lane": LANE, "model_id": MODEL_ID, "model_revision": MODEL_REVISION, "audio_duration_seconds": duration, "segments": [], "selected_segment_indexes": [], "calibration": {"corpus_sha256": CALIBRATION_SHA256, "metric": "segment_brier_score", "threshold": THRESHOLD, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": []}}
     evidence, selected = [], []
     previous_start = previous_end = -1.0
     for index, segment in enumerate(segments):
         start, end, confidence = segment["start_seconds"], segment["end_seconds"], segment["confidence"]
-        if not isinstance(segment.get("text"), str) or not segment["text"] or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or end > duration or not 0 <= confidence <= 1 or start < previous_start or end < previous_end:
+        if not isinstance(segment.get("text"), str) or not segment["text"].strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or end > duration or not 0 <= confidence <= 1 or start < previous_start or end < previous_end:
             raise ContractError("unaligned segment evidence")
         previous_start, previous_end = start, end
         evidence.append({"segment_index": index, "raw_confidence": confidence, "calibrated_confidence": confidence, "timestamp_start_seconds": start, "timestamp_end_seconds": end})
         if confidence < THRESHOLD:
             selected.append(index)
-    if not evidence:
-        raise ContractError("model produced no segment evidence")
-    return {"schema_version": SCHEMA_VERSION, "lane": LANE, "model_id": MODEL_ID, "model_revision": MODEL_REVISION, "audio_duration_seconds": duration, "segments": segments, "selected_segment_indexes": selected, "calibration": {"corpus_sha256": CALIBRATION_SHA256, "metric": "segment_brier_score", "threshold": THRESHOLD, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": evidence}}
+    return {"schema_version": SCHEMA_VERSION, "disposition": "speech", "lane": LANE, "model_id": MODEL_ID, "model_revision": MODEL_REVISION, "audio_duration_seconds": duration, "segments": segments, "selected_segment_indexes": selected, "calibration": {"corpus_sha256": CALIBRATION_SHA256, "metric": "segment_brier_score", "threshold": THRESHOLD, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": evidence}}
 
 
 def main():

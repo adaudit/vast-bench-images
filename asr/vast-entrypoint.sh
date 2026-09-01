@@ -34,7 +34,22 @@ export REPORT_ADDR="$report_addr" WORKER_PORT USE_SSL UNSECURED
 : > "$log"
 python3 /workspace/server.py >>"$log" 2>&1 &
 
-until python3 -c 'from urllib.request import urlopen; urlopen("http://127.0.0.1:8080/healthz", timeout=5).read()' >/dev/null 2>&1; do
+while :; do
+  health=$(python3 -c '
+import json
+from urllib.error import HTTPError
+from urllib.request import urlopen
+try:
+    response = urlopen("http://127.0.0.1:8080/healthz", timeout=5)
+except HTTPError as error:
+    response = error
+try:
+    print(json.load(response).get("status", ""))
+except Exception:
+    pass
+' 2>/dev/null || true)
+  [ "$health" != failed ] || { tail -n 50 "$log" >&2; exit 1; }
+  [ "$health" = ready ] && break
   [ "$(date +%s)" -lt "$deadline" ] || { tail -n 50 "$log" >&2; exit 1; }
   sleep 1
 done

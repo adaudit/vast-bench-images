@@ -1,10 +1,16 @@
 """Vast PyWorker proxy for the baked Parakeet HTTP server."""
 import base64
 import hashlib
+import json
 import os
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from vastai import BenchmarkConfig, HandlerConfig, LogActionConfig, Worker, WorkerConfig
+
+from production_vast_batch import validate_batch
 
 READY_MARKER = "PARAKEET_SERVER_READY"
 BENCHMARK_ARTIFACT = Path("/workspace/fixtures/2086-149220-0033.wav")
@@ -36,6 +42,21 @@ def benchmark_payload():
 def workload(payload):
     return float(len(payload["requests"]))
 
+
+async def validated_response(client_request, model_response):
+    """Fail the benchmark when its successful response is not a complete v3 batch."""
+    from aiohttp import web
+
+    body = await model_response.read()
+    if model_response.status == 200:
+        validate_batch(json.loads(body), (await client_request.json())["requests"])
+    return web.Response(
+        body=body,
+        status=model_response.status,
+        content_type=model_response.content_type,
+        headers={name: value for name, value in model_response.headers.items() if name.lower() != "content-type"},
+    )
+
 Worker(
     WorkerConfig(
         model_server_url="http://127.0.0.1",
@@ -47,6 +68,7 @@ Worker(
             allow_parallel_requests=False,
             max_queue_time=60.0,
             benchmark_config=BenchmarkConfig(generator=benchmark_payload, runs=1, do_warmup=False),
+            response_generator=validated_response,
             workload_calculator=workload,
         )],
         log_action_config=LogActionConfig(on_load=[READY_MARKER]),

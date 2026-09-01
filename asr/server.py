@@ -1,31 +1,74 @@
 #!/usr/bin/env python3
 """Minimal HTTP boundary for the immutable Parakeet-v3 candidate."""
 import json
+import os
 import tempfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
     from vast_adapter import ContractError, parse_request
+    from parakeet_pool import ParakeetPool
 except ModuleNotFoundError:
     from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
     from asr.vast_adapter import ContractError, parse_request
+    from asr.parakeet_pool import ParakeetPool
+
+
+class NotReadyError(ContractError):
+    pass
 
 
 class Runtime:
-    def __init__(self, *, model_verifier=verify_model, model_loader=None, transcriber=None, batch_transcriber=None):
+    def __init__(self, *, model_verifier=verify_model, model_loader=None, transcriber=None, batch_transcriber=None, instance_count=3):
+        if instance_count != 3 or os.environ.get("PARAKEET_INSTANCES", "3") != "3":
+            raise ValueError("PARAKEET_INSTANCES must be exactly 3")
         self.model_verifier = model_verifier
         self.model_loader = model_loader or self._load_model
         self.model = None
+        self.pool = None
         self.transcriber = transcriber
         self.batch_transcriber = batch_transcriber
-        self.ready = False
+        self.instance_count = instance_count
+        self.state = "not_started"
+        self._state_lock = threading.Lock()
+
+    @property
+    def ready(self):
+        return self.state == "ready"
+
+    def initialize_once(self):
+        with self._state_lock:
+            if self.state != "not_started":
+                return
+            self.state = "loading"
+        try:
+            self.model_verifier(MODEL_PATH)
+            pool = ParakeetPool(self.instance_count, self.model_loader)
+            if len(pool.instances) != self.instance_count or len({id(model) for model in pool.instances}) != self.instance_count or any(model is None or not callable(getattr(model, "transcribe", None)) for model in pool.instances):
+                raise ValueError("model lanes are unusable")
+        except Exception:
+            with self._state_lock:
+                self.state = "failed"
+            return
+        with self._state_lock:
+            self.pool = pool
+            self.model = pool.instances[0]
+            self.state = "ready"
+
+    def start_initialization(self):
+        threading.Thread(target=self.initialize_once, daemon=True).start()
+
+    def health(self):
+        if self.state == "ready":
+            return 200, {"status": "ready"}
+        if self.state == "failed":
+            return 503, {"status": "failed", "cause": "initialization failed"}
+        return 503, {"status": "loading" if self.state == "loading" else "not started"}
 
     def check_ready(self):
-        if not self.ready:
-            self.model_verifier(MODEL_PATH)
-            self.model = self.model_loader()
-            self.ready = True
+        return self.ready
 
     def _load_model(self):
         from nemo.collections.asr.models import ASRModel
@@ -44,7 +87,11 @@ class Runtime:
             for request in requests:
                 audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
                 audio.write(request.audio); audio.close(); files.append(audio.name)
-            return [extract_aligned_words(result) for result in self.model.transcribe(files, batch_size=len(files), timestamps=True)]
+            model = self.pool.checkout()
+            try:
+                return [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+            finally:
+                self.pool.checkin(model)
         finally:
             for path in files:
                 try: __import__("os").unlink(path)
@@ -54,7 +101,8 @@ class Runtime:
         return self.transcribe_batch([payload])[0]
 
     def transcribe_batch(self, payloads):
-        self.check_ready()
+        if not self.ready:
+            raise NotReadyError("runtime is not ready")
         requests = [parse_request(payload) for payload in payloads]
         if not 0 < len(requests) <= 32: raise ContractError("batch is outside the permitted limit")
         if self.batch_transcriber: segments = self.batch_transcriber(requests)
@@ -66,6 +114,7 @@ class Runtime:
 
 def make_server(address=("0.0.0.0", 8080), runtime=None):
     runtime = runtime or Runtime()
+    runtime.start_initialization()
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status, payload):
@@ -80,23 +129,23 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
             if self.path != "/healthz":
                 self._send(404, {"error": "not found"})
                 return
-            try:
-                runtime.check_ready()
-            except ContractError:
-                self._send(503, {"status": "not ready"})
-                return
-            self._send(200, {"status": "ready"})
+            status, payload = runtime.health()
+            self._send(status, payload)
 
         def do_POST(self):
             if self.path not in ("/transcribe", "/transcribe-batch") or self.headers.get("Content-Type") != "application/json":
                 self._send(404, {"error": "not found"})
                 return
             try:
+                if not runtime.ready:
+                    raise NotReadyError("runtime is not ready")
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 700 * 1024 * 1024:
                     raise ContractError("request body is outside the permitted limit")
                 payload = json.loads(self.rfile.read(length))
                 self._send(200, runtime.transcribe(payload) if self.path == "/transcribe" else runtime.transcribe_batch(payload["requests"]))
+            except NotReadyError:
+                self._send(503, {"error": "not ready"})
             except (ContractError, ValueError, json.JSONDecodeError):
                 self._send(400, {"error": "invalid request"})
 
