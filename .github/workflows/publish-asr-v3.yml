@@ -3,6 +3,11 @@ name: Publish Parakeet v3 ASR candidate
 on:
   workflow_dispatch:
 
+concurrency:
+  group: publish-asr-v3-${{ github.sha }}
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   contents: read
   packages: write
@@ -17,53 +22,139 @@ jobs:
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           driver: docker-container
+          version: v0.36.1
       - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
         with:
           mode: firewall-free
       - name: Scan exact source
         run: |
           set -euo pipefail
-          if docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan --recursive .; then
-            osv_status=0
+          docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan --recursive .
+      - name: Prepare fail-closed GHCR tag guard
+        run: |
+          guard="$RUNNER_TEMP/refuse-occupied-ghcr-tag"
+          cat > "$guard" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${GITHUB_ACTOR:?GITHUB_ACTOR is required}"
+          : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+          : "${IMAGE:?IMAGE is required}"
+          : "${TAG:?TAG is required}"
+
+          repository="${IMAGE#ghcr.io/}"
+          if [ "$repository" = "$IMAGE" ] || [ -z "$repository" ]; then
+            echo "IMAGE must be a non-empty ghcr.io repository." >&2
+            exit 1
+          fi
+
+          token_body="$(mktemp)"
+          manifest_body="$(mktemp)"
+          trap 'rm -f "$token_body" "$manifest_body"' EXIT
+
+          if ! token_status="$(
+            printf 'user = "%s:%s"\n' "$GITHUB_ACTOR" "$GITHUB_TOKEN" |
+              curl --config - --silent --show-error --proto '=https' --connect-timeout 15 --max-time 60 --output "$token_body" --write-out '%{http_code}' --get --data-urlencode 'service=ghcr.io' --data-urlencode "scope=repository:$repository:pull" https://ghcr.io/token
+          )"; then
+            echo "GHCR token request failed before an HTTP response was confirmed." >&2
+            exit 1
+          fi
+          if [ "$token_status" != 200 ]; then
+            echo "GHCR token request failed with HTTP $token_status." >&2
+            exit 1
+          fi
+          if ! registry_token="$(jq -ser '
+            def b64token: type == "string" and test("^[A-Za-z0-9._~+/-]+={0,}\\z");
+            if length != 1 or (.[0] | type) != "object" then empty
+            else .[0] |
+              if (.token? | b64token)
+                   and (((.access_token? | type) == "null") or (.access_token == .token))
+              then .token
+              elif ((.token? | type) == "null") and (.access_token? | b64token)
+              then .access_token
+              else empty end
+            end
+          ' "$token_body")"; then
+            echo "GHCR token response was malformed or ambiguous." >&2
+            exit 1
+          fi
+
+          if ! manifest_status="$(curl --silent --show-error --proto '=https' --connect-timeout 15 --max-time 60 --output "$manifest_body" --write-out '%{http_code}' --header "Authorization: Bearer $registry_token" --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' "https://ghcr.io/v2/$repository/manifests/$TAG")"; then
+            echo "GHCR manifest request failed before an HTTP response was confirmed." >&2
+            exit 1
+          fi
+
+          if [ "$manifest_status" = 404 ] && jq -e '
+            type == "object" and
+            ((.errors | type) == "array") and
+            ((.errors | length) > 0) and
+            all(.errors[];
+              type == "object" and
+              (.code == "MANIFEST_UNKNOWN") and
+              ((.message | type) == "string") and
+              ((.message | length) > 0))
+          ' "$manifest_body" >/dev/null; then
+            echo "Confirmed unoccupied tag: $IMAGE:$TAG"
+            exit 0
+          fi
+
+          if [ "$manifest_status" = 200 ]; then
+            echo "Refusing occupied tag: $IMAGE:$TAG" >&2
           else
-            osv_status=$?
+            echo "GHCR manifest check failed closed with HTTP $manifest_status." >&2
           fi
-          if [ "$osv_status" -eq 1 ]; then
-            echo "OSV scanner reported known vulnerabilities; continuing by release policy."
-          elif [ "$osv_status" -ne 0 ]; then
-            echo "OSV scanner failed with status $osv_status." >&2
-            exit "$osv_status"
-          fi
+          exit 1
+          EOF
       - name: Refuse an occupied serverless tag before login
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
           TAG: parakeet-${{ github.sha }}
-        run: '! docker buildx imagetools inspect "$IMAGE:$TAG"'
+        run: bash "$RUNNER_TEMP/refuse-occupied-ghcr-tag"
       - name: Login to GHCR
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build one immutable serverless wrapper
+        id: build
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          TAG: parakeet-${{ github.sha }}
+          STAGING_TAG: staging-parakeet-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          ! docker buildx imagetools inspect "$IMAGE:$TAG"
-          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --metadata-file metadata.json -f asr/vast-serverless.Dockerfile -t "$IMAGE:$TAG" .
+          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --metadata-file metadata.json -f asr/vast-serverless.Dockerfile -t "$IMAGE:$STAGING_TAG" .
           digest="$(jq -r '."containerimage.digest"' metadata.json)"
           test "$digest" != null
           docker pull "$IMAGE@$digest"
           docker save "$IMAGE@$digest" -o image.tar
-          if docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image --archive /workspace/image.tar; then
-            osv_status=0
-          else
-            osv_status=$?
-          fi
-          if [ "$osv_status" -eq 1 ]; then
-            echo "OSV scanner reported known vulnerabilities; continuing by release policy."
-          elif [ "$osv_status" -ne 0 ]; then
-            echo "OSV scanner failed with status $osv_status." >&2
-            exit "$osv_status"
-          fi
+          docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image --archive /workspace/image.tar
           docker buildx imagetools inspect "$IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest final OCI index
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Promote attested digest to final tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
+          TAG: parakeet-${{ github.sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          promotion_manifest="$(docker buildx imagetools create --dry-run --prefer-index=false "$IMAGE@$DIGEST")"
+          planned_digest="sha256:$(printf '%s' "$promotion_manifest" | sha256sum | awk '{print $1}')"
+          test "$planned_digest" = "$DIGEST"
+
+          bash "$RUNNER_TEMP/refuse-occupied-ghcr-tag"
+
+          if docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"; then
+            exit 0
+          fi
+
+          resolved="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -er '.digest')" || exit 1
+          test "$resolved" = "$DIGEST"
