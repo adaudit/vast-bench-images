@@ -1067,6 +1067,9 @@ pure-eval==0.2.3 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   stack-data
+pyannote-core==4.5 \
+    --hash=sha256:7452e68b7dce4f589d575aa53f77e5b37783333fd0d472b9f25351f0cff2097c
+    # via NeMo ASR import closure
 pyarrow==25.0.1 \
     --hash=sha256:25f8720bf6387d5dc2ebd2622112de630760419e4b66134405dd24110d15f37e
     # via datasets metadata closure

@@ -842,6 +842,14 @@
       "source": "https://files.pythonhosted.org/packages/8e/37/efad0257dc6e593a18957422533ff0f87ede7c9c6ea010a2177d738fb82f/pure_eval-0.2.3-py3-none-any.whl"
     },
     {
+      "name": "pyannote.core",
+      "version": "4.5",
+      "filename": "pyannote.core-4.5-py3-none-any.whl",
+      "sha256": "7452e68b7dce4f589d575aa53f77e5b37783333fd0d472b9f25351f0cff2097c",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/9b/79/db4c66eb228e37d73939dc96fe9acea4903ec72b10f8bbda16b2a3637602/pyannote.core-4.5-py3-none-any.whl"
+    },
+    {
       "name": "pyarrow",
       "version": "25.0.1",
       "filename": "pyarrow-25.0.1-cp311-cp311-manylinux_2_28_x86_64.whl",
