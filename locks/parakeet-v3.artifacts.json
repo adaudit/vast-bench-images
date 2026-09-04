@@ -634,6 +634,14 @@
       "source": "https://files.pythonhosted.org/packages/e3/94/1843518e420fa3ed6919835845df698c7e27e183cb997394e4a670973a65/omegaconf-2.3.0-py3-none-any.whl"
     },
     {
+      "name": "onnx",
+      "version": "1.22.0",
+      "filename": "onnx-1.22.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "1d0a2bdb15eb2b3cb65c438f3423d9620d14fdce32f92380e6bb1b2e09568ef5",
+      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
+      "source": "https://files.pythonhosted.org/packages/2b/a0/c9d9d56ceadb1c0a90a7cbec5a0510520ab6538938944fa84548e4b5b054/onnx-1.22.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
       "name": "opentelemetry-api",
       "version": "1.44.0",
       "filename": "opentelemetry_api-1.44.0-py3-none-any.whl",
