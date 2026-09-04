@@ -7,6 +7,10 @@ on:
         description: Explicitly authorize the documented canary-only OSV bypass
         required: true
         type: boolean
+      proof_only:
+        description: Build and import-test the overlay without publishing
+        required: true
+        type: boolean
 
 concurrency:
   group: publish-asr-v3-${{ github.sha }}
@@ -24,9 +28,22 @@ jobs:
     if: inputs.authorize_known_vulnerable_canary && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Check out immutable overlay
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: overlay
+      - name: Check out immutable application source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: 482204e85c2c9ab440e9351e5495d037c25a37cf
+          path: source
+      - name: Apply the build-only overlay
+        run: |
+          set -euo pipefail
+          cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
+          cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
+          test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           driver: docker-container
@@ -36,10 +53,12 @@ jobs:
           mode: firewall-free
       - name: Scan exact source (authorized canary warning)
         continue-on-error: true
+        working-directory: source
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan --recursive .
       - name: Prepare fail-closed GHCR tag guard
+        if: '!inputs.proof_only'
         run: |
           guard="$RUNNER_TEMP/refuse-occupied-ghcr-tag"
           cat > "$guard" <<'EOF'
@@ -114,16 +133,19 @@ jobs:
           exit 1
           EOF
       - name: Refuse an occupied serverless tag before login
+        if: '!inputs.proof_only'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
           TAG: canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}
         run: bash "$RUNNER_TEMP/refuse-occupied-ghcr-tag"
       - name: Login to GHCR
+        if: '!inputs.proof_only'
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Fetch and verify exact baked model
+        working-directory: source
         env:
           MODEL_URL: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo
           MODEL_SHA256: 3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d
@@ -135,47 +157,25 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
-      - name: Materialize and verify locked wheelhouse
+      - name: Materialize hash-verified wheelhouse
+        working-directory: source
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import hashlib, json, re, shutil, urllib.request
-          from pathlib import Path
-
-          wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
-          artifacts = json.loads(Path("locks/parakeet-v3.artifacts.json").read_text())["wheels"]
-          locked = {
-              re.split(r"\s+|==", line, maxsplit=1)[0].lower().replace("_", "-")
-              for line in Path("locks/parakeet-v3.requirements.txt").read_text().splitlines()
-              if line and not line.startswith(("#", "-"))
-          }
-          by_name = {artifact["name"].lower().replace("_", "-"): artifact for artifact in artifacts}
-          if set(by_name) != locked:
-              raise SystemExit("wheel artifact manifest does not exactly match locked requirements")
-          for artifact in artifacts:
-              target = wheelhouse / artifact["filename"]
-              if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == artifact["sha256"]:
-                  continue
-              if artifact["source"] == "local audited bootstrap":
-                  raise SystemExit(f"missing audited bootstrap wheel: {target.name}")
-              if not artifact["source"].startswith("https://files.pythonhosted.org/"):
-                  raise SystemExit(f"forbidden wheel source: {artifact['source']}")
-              temporary = target.with_suffix(target.suffix + ".partial")
-              temporary.unlink(missing_ok=True)
-              try:
-                  with urllib.request.urlopen(artifact["source"], timeout=120) as response, temporary.open("wb") as output:
-                      shutil.copyfileobj(response, output)
-                  if hashlib.sha256(temporary.read_bytes()).hexdigest() != artifact["sha256"]:
-                      raise SystemExit(f"wheel hash mismatch: {target.name}")
-                  temporary.replace(target)
-              finally:
-                  temporary.unlink(missing_ok=True)
-          if {path.name for path in wheelhouse.glob("*.whl")} < {artifact["filename"] for artifact in artifacts}:
-              raise SystemExit("wheelhouse remains incomplete")
-          print(f"verified {len(artifacts)} locked wheels")
-          PY
+          python -m pip download --dest vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
+      - name: Build and prove the offline overlay
+        if: inputs.proof_only
+        working-directory: source
+        env:
+          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
+          PROOF_IMAGE: local/parakeet-v3-overlay-proof:${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$PROOF_IMAGE" .
+          docker run --rm --entrypoint python "$PROOF_IMAGE" -I -c "import nemo, torch, vastai"
       - name: Build one immutable serverless wrapper
+        if: '!inputs.proof_only'
         id: build
+        working-directory: source
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
@@ -192,6 +192,7 @@ jobs:
           docker buildx imagetools inspect "$IMAGE@$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Attest final OCI index
+        if: '!inputs.proof_only'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
@@ -199,6 +200,7 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Promote attested digest to final tag
+        if: '!inputs.proof_only'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
