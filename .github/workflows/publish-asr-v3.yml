@@ -169,10 +169,18 @@ jobs:
           wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
           artifacts = json.loads(Path("locks/parakeet-v3.artifacts.json").read_text())["wheels"]
           locked = {
-              re.sub(r"[_.]+", "-", match.group(1).lower())
-              for line in Path("locks/parakeet-v3.requirements.txt").read_text().splitlines()
-              if (match := re.match(r"^([A-Za-z0-9_.-]+)==", line))
+              re.sub(r"[_.]+", "-", match.group(1).lower()): (
+                  match.group(2), set(re.findall(r"--hash=sha256:([0-9a-f]{64})", block))
+              )
+              for block in re.split(r"(?m)^(?=[A-Za-z0-9_.-]+==)", Path("locks/parakeet-v3.requirements.txt").read_text())
+              if (match := re.match(r"^([A-Za-z0-9_.-]+)==([^\\s]+)", block))
           }
+          artifacts = [
+              artifact for artifact in artifacts
+              if (locked_entry := locked.get(re.sub(r"[_.]+", "-", artifact["name"].lower())))
+              and artifact["version"] == locked_entry[0]
+              and artifact["sha256"] in locked_entry[1]
+          ]
           if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked:
               raise SystemExit("artifact manifest is not a subset of the lock")
           for artifact in artifacts:
@@ -192,7 +200,7 @@ jobs:
               finally:
                   temporary.unlink(missing_ok=True)
           PY
-          python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
+          python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux1_x86_64 --platform manylinux2010_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux_2_12_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_24_x86_64 --platform manylinux_2_27_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_31_x86_64 --platform linux_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
       - name: Build and prove the offline overlay
         if: inputs.proof_only
         working-directory: source
