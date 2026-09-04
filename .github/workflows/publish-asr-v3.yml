@@ -414,6 +414,7 @@ jobs:
           from pathlib import Path
 
           wheelhouse = Path("vendor/wheelhouses/diar-v1")
+          wheelhouse.mkdir(parents=True, exist_ok=True)
           artifacts = json.loads(Path("locks/diar-v1.artifacts.json").read_text())["wheels"]
           locked = {
               re.sub(r"[_.]+", "-", match.group(1).lower()): (
