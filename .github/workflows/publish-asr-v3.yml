@@ -135,6 +135,45 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
+      - name: Materialize and verify locked wheelhouse
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, re, shutil, urllib.request
+          from pathlib import Path
+
+          wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
+          artifacts = json.loads(Path("locks/parakeet-v3.artifacts.json").read_text())["wheels"]
+          locked = {
+              re.split(r"\s+|==", line, maxsplit=1)[0].lower().replace("_", "-")
+              for line in Path("locks/parakeet-v3.requirements.txt").read_text().splitlines()
+              if line and not line.startswith(("#", "-"))
+          }
+          by_name = {artifact["name"].lower().replace("_", "-"): artifact for artifact in artifacts}
+          if set(by_name) != locked:
+              raise SystemExit("wheel artifact manifest does not exactly match locked requirements")
+          for artifact in artifacts:
+              target = wheelhouse / artifact["filename"]
+              if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == artifact["sha256"]:
+                  continue
+              if artifact["source"] == "local audited bootstrap":
+                  raise SystemExit(f"missing audited bootstrap wheel: {target.name}")
+              if not artifact["source"].startswith("https://files.pythonhosted.org/"):
+                  raise SystemExit(f"forbidden wheel source: {artifact['source']}")
+              temporary = target.with_suffix(target.suffix + ".partial")
+              temporary.unlink(missing_ok=True)
+              try:
+                  with urllib.request.urlopen(artifact["source"], timeout=120) as response, temporary.open("wb") as output:
+                      shutil.copyfileobj(response, output)
+                  if hashlib.sha256(temporary.read_bytes()).hexdigest() != artifact["sha256"]:
+                      raise SystemExit(f"wheel hash mismatch: {target.name}")
+                  temporary.replace(target)
+              finally:
+                  temporary.unlink(missing_ok=True)
+          if {path.name for path in wheelhouse.glob("*.whl")} < {artifact["filename"] for artifact in artifacts}:
+              raise SystemExit("wheelhouse remains incomplete")
+          print(f"verified {len(artifacts)} locked wheels")
+          PY
       - name: Build one immutable serverless wrapper
         id: build
         env:
