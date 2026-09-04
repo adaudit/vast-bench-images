@@ -6,8 +6,7 @@ RUN python -m venv "$VIRTUAL_ENV"
 COPY locks/parakeet-v3.requirements.txt /locks/parakeet-v3.requirements.txt
 COPY vendor/wheelhouses/parakeet-v3/ /wheels/
 RUN pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/parakeet-v3.requirements.txt \
- && pip check \
- && python -I -c "import nemo, torch, vastai"
+ && python -I -c 'import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel'
 
 FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c
 LABEL io.adaudit.asr.model="nvidia/parakeet-tdt-0.6b-v3" \

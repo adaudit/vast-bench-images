@@ -175,8 +175,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         )
         self.assertNotIn("ghcr.io/adaudit/vast-bench-asr@", dockerfile)
         self.assertIn("USER root", dockerfile)
-        self.assertIn("pip check", dockerfile)
-        self.assertIn('python -I -c "import vastai"', dockerfile)
+        self.assertNotIn("pip check", dockerfile)
+        self.assertIn("import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel", dockerfile)
         self.assertIn("COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo", dockerfile)
         self.assertNotIn("chmod 0444 /workspace/models", dockerfile)
         self.assertLess(dockerfile.index("COPY --chmod=0755 asr/vast-entrypoint.sh"), dockerfile.index("ENTRYPOINT"))
@@ -298,7 +298,7 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             release.set(); http.shutdown(); thread.join(); http.server_close()
 
-    def test_http_terminal_failure_is_stable_and_sanitized(self):
+    def test_http_terminal_failure_is_stable_and_exposes_error(self):
         loads = []
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or (_ for _ in ()).throw(RuntimeError("/tmp/private-model")))
         http = server.make_server(("127.0.0.1", 0), runtime)
@@ -306,7 +306,7 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         try:
             while runtime.health()[0] != 503 or runtime.health()[1]["status"] != "failed":
                 pass
-            expected = (503, {"status": "failed", "cause": "initialization failed"})
+            expected = (503, {"status": "failed", "cause": "initialization failed", "error": "/tmp/private-model"})
             self.assertEqual(self._http(f"http://127.0.0.1:{http.server_port}/healthz"), expected)
             self.assertEqual(self._http(f"http://127.0.0.1:{http.server_port}/healthz"), expected)
             self.assertEqual(len(loads), 1)

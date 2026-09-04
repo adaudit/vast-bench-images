@@ -41,8 +41,10 @@ class VastAdapterTest(unittest.TestCase):
         server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
         loads = []
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or (_ for _ in ()).throw(RuntimeError("boom")))
-        runtime.initialize_once()
-        self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed"}))
+        with self.assertLogs("parakeet.server", "ERROR") as logs:
+            runtime.initialize_once()
+        self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed", "error": "boom"}))
+        self.assertIn("RuntimeError: boom", "\n".join(logs.output))
         runtime.initialize_once()
         self.assertEqual(len(loads), 1)
 
@@ -51,15 +53,14 @@ class VastAdapterTest(unittest.TestCase):
         for loader in (lambda: None, lambda: object(), lambda shared=self._model(): shared):
             runtime = server.Runtime(model_verifier=lambda _: None, model_loader=loader)
             runtime.initialize_once()
-            self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed"}))
+            self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed", "error": "model lanes are unusable"}))
 
-    def test_failure_cause_is_stable_and_sanitized(self):
+    def test_failure_error_is_stable_and_exposed(self):
         server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
         loads = []
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or (_ for _ in ()).throw(RuntimeError("/tmp/private-model secret")))
         runtime.initialize_once()
-        self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed"}))
-        self.assertNotIn("/tmp", str(runtime.health()))
+        self.assertEqual(runtime.health(), (503, {"status": "failed", "cause": "initialization failed", "error": "/tmp/private-model secret"}))
         runtime.initialize_once()
         self.assertEqual(len(loads), 1)
 

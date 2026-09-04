@@ -36,6 +36,7 @@ class Runtime:
         self.batch_transcriber = batch_transcriber
         self.instance_count = instance_count
         self.state = "not_started"
+        self.error = None
         self._state_lock = threading.Lock()
 
     @property
@@ -52,8 +53,10 @@ class Runtime:
             pool = ParakeetPool(self.instance_count, self.model_loader)
             if len(pool.instances) != self.instance_count or len({id(model) for model in pool.instances}) != self.instance_count or any(model is None or not callable(getattr(model, "transcribe", None)) for model in pool.instances):
                 raise ValueError("model lanes are unusable")
-        except Exception:
+        except Exception as exc:
+            LOGGER.exception("parakeet initialization failed")
             with self._state_lock:
+                self.error = str(exc)
                 self.state = "failed"
             return
         with self._state_lock:
@@ -68,7 +71,7 @@ class Runtime:
         if self.state == "ready":
             return 200, {"status": "ready"}
         if self.state == "failed":
-            return 503, {"status": "failed", "cause": "initialization failed"}
+            return 503, {"status": "failed", "cause": "initialization failed", "error": self.error}
         return 503, {"status": "loading" if self.state == "loading" else "not started"}
 
     def check_ready(self):

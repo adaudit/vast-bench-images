@@ -41,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
+          cp overlay/asr/server.py source/asr/server.py
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
@@ -210,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$PROOF_IMAGE" .
-          docker run --rm --entrypoint python "$PROOF_IMAGE" -I -c "import nemo, torch, vastai"
+          docker run --rm --entrypoint python "$PROOF_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel"
       - name: Build one immutable serverless wrapper
         if: '!inputs.proof_only'
         id: build
