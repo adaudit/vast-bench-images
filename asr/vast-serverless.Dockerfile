@@ -4,14 +4,10 @@ FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac
 ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
 RUN python -m venv "$VIRTUAL_ENV"
 COPY locks/parakeet-v3.requirements.txt /locks/parakeet-v3.requirements.txt
-COPY locks/parakeet-v3.bootstrap.requirements.txt /locks/parakeet-v3.bootstrap.requirements.txt
 COPY vendor/wheelhouses/parakeet-v3/ /wheels/
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch==2.5.1+cu124 torchaudio==2.5.1+cu124 \
- && pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/parakeet-v3.requirements.txt \
- && pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/parakeet-v3.bootstrap.requirements.txt \
- && PIP_NO_INDEX=0 pip install --no-cache-dir vastai-sdk==1.5.5 \
+RUN pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/parakeet-v3.requirements.txt \
  && pip check \
- && python -I -c "import vastai"
+ && python -I -c "import nemo, torch, vastai"
 
 FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c
 LABEL io.adaudit.asr.model="nvidia/parakeet-tdt-0.6b-v3" \
