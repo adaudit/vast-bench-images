@@ -42,6 +42,7 @@ jobs:
           set -euo pipefail
           cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
+          cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
@@ -161,6 +162,36 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, re, shutil, urllib.request
+          from pathlib import Path
+
+          wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
+          artifacts = json.loads(Path("locks/parakeet-v3.artifacts.json").read_text())["wheels"]
+          locked = {
+              match.group(1).lower().replace("_", "-")
+              for line in Path("locks/parakeet-v3.requirements.txt").read_text().splitlines()
+              if (match := re.match(r"^([A-Za-z0-9_.-]+)==", line))
+          }
+          if not {artifact["name"].lower().replace("_", "-") for artifact in artifacts} <= locked:
+              raise SystemExit("artifact manifest is not a subset of the lock")
+          for artifact in artifacts:
+              target = wheelhouse / artifact["filename"]
+              if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == artifact["sha256"]:
+                  continue
+              if artifact["source"] == "local audited bootstrap":
+                  raise SystemExit(f"missing audited bootstrap wheel: {target.name}")
+              temporary = target.with_suffix(target.suffix + ".partial")
+              temporary.unlink(missing_ok=True)
+              try:
+                  with urllib.request.urlopen(artifact["source"], timeout=120) as response, temporary.open("wb") as output:
+                      shutil.copyfileobj(response, output)
+                  if hashlib.sha256(temporary.read_bytes()).hexdigest() != artifact["sha256"]:
+                      raise SystemExit(f"wheel hash mismatch: {target.name}")
+                  temporary.replace(target)
+              finally:
+                  temporary.unlink(missing_ok=True)
+          PY
           python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
       - name: Build and prove the offline overlay
         if: inputs.proof_only
