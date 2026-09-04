@@ -31,6 +31,9 @@ aiosignal==1.4.0 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   aiohttp
+alembic==1.19.1 \
+    --hash=sha256:b39018cb3d9413a19cbd54cf3c02ad33998641f0538eb77413a488a21c3e14be
+    # via optuna metadata closure
 annotated-doc==0.0.5 \
     --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
     # via
@@ -73,6 +76,9 @@ audioread==3.1.0 \
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   lhotse
     #   librosa
+bitsandbytes==0.45.5 \
+    --hash=sha256:a5453f30cc6aab6ccaac364e6bf51a7808d3da5f71763dffeb6d9694c59136e4
+    # via nemo-toolkit metadata closure
 borb==2.1.25 \
     --hash=sha256:708c6b14d298890d75567cda15027d874d818e533089d88637831e495f489088 \
     --hash=sha256:813a25227b96f471d29244bf3c07a7b3df36d61d62bcbecf45b14944b8011ef4
@@ -196,6 +202,9 @@ cytoolz==1.1.0 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   lhotse
+datasets==5.0.1 \
+    --hash=sha256:9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4
+    # via nemo-toolkit metadata closure
 decorator==5.3.1 \
     --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
     # via
@@ -278,6 +287,9 @@ h11==0.16.0 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   httpcore
+hf-xet==1.6.0 \
+    --hash=sha256:d62671bb130879cef0ee4c9ebe47a14af6c66ec53e6d84dc15936e5ffdfac82f
+    # via huggingface-hub metadata closure
 httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
     # via
@@ -322,11 +334,17 @@ intervaltree==3.2.1 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   lhotse
+ipython==9.16.1 \
+    --hash=sha256:4acae635506f6d352d94c4899a19d5f85f8bc4d230932342dca556fdab1c69b4
+    # via mediapy metadata closure
 ipython-pygments-lexers==1.1.1 \
     --hash=sha256:a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   ipython
+jedi==0.20.0 \
+    --hash=sha256:7bdd9c2634f56713299976f4cbd59cb3fa92165cc5e05ea811fb253480728b67
+    # via ipython metadata closure
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -680,6 +698,9 @@ markupsafe==3.0.3 \
 marshmallow==4.3.1 \
     --hash=sha256:e65accfbe277546df92ed7996a678c90e063e9a7c2a2f5e03f7d0b90e3768c42
     # via -r /private/tmp/parakeet-vast-cu124.in
+matplotlib==3.11.1 \
+    --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83
+    # via metadata closure
 matplotlib-inline==0.2.2 \
     --hash=sha256:3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6
     # via
@@ -693,6 +714,9 @@ mdurl==0.1.2 \
 mediapy==1.1.6 \
     --hash=sha256:c74370808b445666f95272bfdf0eb5707a43b7e05e5527f2dd0830e6892f976f
     # via -r /private/tmp/parakeet-vast-cu124.in
+ml-dtypes==0.5.4 \
+    --hash=sha256:19b9a53598f21e453ea2fbda8aa783c20faff8e1eeb0d7ab899309a0053f1483
+    # via onnx import closure
 more-itertools==11.1.0 \
     --hash=sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192
     # via
@@ -853,6 +877,9 @@ opentelemetry-api==1.44.0 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   wandb
+optuna==4.9.0 \
+    --hash=sha256:f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee
+    # via nemo-toolkit metadata closure
 packaging==24.2 \
     --hash=sha256:09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759
     # via
@@ -874,6 +901,9 @@ packaging==24.2 \
     #   torchmetrics
     #   transformers
     #   wandb
+pandas==3.0.5 \
+    --hash=sha256:2c0cf1dd9b55a22d105fc46c1b489af3bd42264fcba7c66297bf47a9a1d9c78a
+    # via metadata closure
 parso==0.8.7 \
     --hash=sha256:a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c
     # via
@@ -1054,6 +1084,9 @@ pyannote-database==5.1.3 \
 pyannote-metrics==3.2.1 \
     --hash=sha256:46be797cdade26c82773e5018659ae610145260069c7c5bf3d3c8a029ade8e22
     # via -r /private/tmp/parakeet-vast-cu124.in
+pyarrow==25.0.1 \
+    --hash=sha256:25f8720bf6387d5dc2ebd2622112de630760419e4b66134405dd24110d15f37e
+    # via datasets metadata closure
 pybind11==2.13.6 \
     --hash=sha256:237c41e29157b962835d356b370ededd57594a26d5894a795960f0047cb5caf5
     # via
@@ -1321,6 +1354,9 @@ safetensors==0.8.0 \
     #   accelerate
     #   peft
     #   transformers
+scikit-learn==1.9.0 \
+    --hash=sha256:f7e254636164090da847715a27f8e5478feb98c40a9e0ee90cbd277de9e5ceb8
+    # via metadata closure
 scipy==1.17.1 \
     --hash=sha256:43af8d1f3bea642559019edfe64e9b11192a8978efbd1539d7bc2aaa23d92de4
     # via
@@ -1380,6 +1416,9 @@ soxr==1.1.0 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   librosa
+sqlalchemy==2.0.52 \
+    --hash=sha256:938325a5373267afc53bfbe72983b20fbd64ca47842aac62433c3da1137ecff1
+    # via optuna metadata closure
 stack-data==0.6.3 \
     --hash=sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695
     # via
@@ -1397,6 +1436,12 @@ tabulate==0.10.0 \
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   lhotse
     #   pyannote-metrics
+tensorboard==2.20.0 \
+    --hash=sha256:9dc9f978cb84c0723acf9a345d96c184f0293d18f166bb8d59ee098e6cfaaba6
+    # via nemo-toolkit metadata closure
+tensorboard-data-server==0.7.2 \
+    --hash=sha256:ef687163c24185ae9754ed5650eb5bc4d84ff257aabdc33f0cc6f74d8ba54530
+    # via tensorboard metadata closure
 termcolor==3.3.0 \
     --hash=sha256:cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5
     # via
@@ -1492,6 +1537,13 @@ transformers==4.51.3 \
     # via
     #   -r /private/tmp/parakeet-vast-cu124.in
     #   peft
+triton==3.1.0 \
+    --hash=sha256:0f34f6e7885d1bf0eaaf7ba875a5f0ce6f3c13ba98f9503651c1e6dc6757ed5c \
+    --hash=sha256:6b0dd10a925263abbe9fa37dcde67a5e9b2383fc269fdf59f5657cac38c5d1d8 \
+    --hash=sha256:6dadaca7fc24de34e180271b5cf864c16755702e9f63a16f62df714a8099126a \
+    --hash=sha256:aafa9a20cd0d9fee523cd4504aa7131807a864cd77dcf6efe7e981f18b8c6c11 \
+    --hash=sha256:c8182f42fd8080a7d39d666814fa36c5e30cc00ea7eeeb1a2983dbb4c99a0fdc
+    # via torch metadata closure
 typeguard==4.6.0 \
     --hash=sha256:79878165bb86f2cf5d41d159a0ff1792a796cf496882d2fe1b1c6c7049b9cdd7
     # via
@@ -1550,6 +1602,9 @@ vastai-sdk==1.5.5 \
     --hash=sha256:59fdbe5bbce54e1ca948d787fa2d48d740d727bdca635752fef0cc904dd1dcf0 \
     --hash=sha256:c54e7c35582ef85e0614f9aac00e6eb9c234774a95c5d9a0aadbd690d3fa46ac
     # via -r /private/tmp/parakeet-vast-cu124.in
+wandb==0.28.2 \
+    --hash=sha256:1db698d107871c66b2dcbb0cf4dc2af1ddb159ba94e957e890158ec60ab2de54
+    # via nemo-toolkit metadata closure
 wcwidth==0.8.2 \
     --hash=sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85
     # via

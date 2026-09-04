@@ -46,6 +46,14 @@
       "source": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl"
     },
     {
+      "name": "alembic",
+      "version": "1.19.1",
+      "filename": "alembic-1.19.1-py3-none-any.whl",
+      "sha256": "b39018cb3d9413a19cbd54cf3c02ad33998641f0538eb77413a488a21c3e14be",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/20/89/e62cc37b69ad357cc8ecd6e7367f5245f523d3cbb338a66197212bdf6749/alembic-1.19.1-py3-none-any.whl"
+    },
+    {
       "name": "annotated-doc",
       "version": "0.0.5",
       "filename": "annotated_doc-0.0.5-py3-none-any.whl",
@@ -102,6 +110,14 @@
       "sha256": "b30d1df6c5d3de5dcef0fb0e256f6ea17bdcf5f979408df0297d8a408e2971b4",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/7e/16/fbe8e1e185a45042f7cd3a282def5bb8d95bb69ab9e9ef6a5368aa17e426/audioread-3.1.0-py3-none-any.whl"
+    },
+    {
+      "name": "bitsandbytes",
+      "version": "0.45.5",
+      "filename": "bitsandbytes-0.45.5-py3-none-manylinux_2_24_x86_64.whl",
+      "sha256": "a5453f30cc6aab6ccaac364e6bf51a7808d3da5f71763dffeb6d9694c59136e4",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/07/b7/cb5ce4d1a382cf53c19ef06c5fc29e85f5e129b4da6527dd207d90a5b8ad/bitsandbytes-0.45.5-py3-none-manylinux_2_24_x86_64.whl"
     },
     {
       "name": "braceexpand",
@@ -206,6 +222,14 @@
       "sha256": "23a1fc406d491eef7a7e985095725cb7b20a04a7bd9b7a66400e5c86e082e0aa",
       "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
       "source": "https://files.pythonhosted.org/packages/c1/9d/05e753afbaac3f92691059b3ba875589c98a425d69e5808cec32b31b580c/cuda_python-12.9.7-py3-none-any.whl"
+    },
+    {
+      "name": "datasets",
+      "version": "5.0.1",
+      "filename": "datasets-5.0.1-py3-none-any.whl",
+      "sha256": "9fbf73688f8c18f7529b4fe592abd04015f81d1e58001e4bac73ffb2b39d7cc4",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/44/0b/98fc6eb83333508ca5f44c52b3e287ea8137a0ad582714e2cbc67a02154b/datasets-5.0.1-py3-none-any.whl"
     },
     {
       "name": "decorator",
@@ -322,6 +346,14 @@
       "source": "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl"
     },
     {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "filename": "hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "sha256": "d62671bb130879cef0ee4c9ebe47a14af6c66ec53e6d84dc15936e5ffdfac82f",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/67/4e/a28359bf1c1ecf11eba22123168c138698f7cb576ac678f5a2e16cd5da08/hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    },
+    {
       "name": "httpcore",
       "version": "1.0.9",
       "filename": "httpcore-1.0.9-py3-none-any.whl",
@@ -386,12 +418,28 @@
       "source": "https://files.pythonhosted.org/packages/83/7f/8a80a1c7c2ed05822b5a2b312d2995f30c533641f8198366ba2e26a7bb03/intervaltree-3.2.1-py2.py3-none-any.whl"
     },
     {
+      "name": "ipython",
+      "version": "9.16.1",
+      "filename": "ipython-9.16.1-py3-none-any.whl",
+      "sha256": "4acae635506f6d352d94c4899a19d5f85f8bc4d230932342dca556fdab1c69b4",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/bc/8e/1239df488393d61076653bfb29f759d0f60cab8e030abdf7c17c31539b51/ipython-9.16.1-py3-none-any.whl"
+    },
+    {
       "name": "ipython_pygments_lexers",
       "version": "1.1.1",
       "filename": "ipython_pygments_lexers-1.1.1-py3-none-any.whl",
       "sha256": "a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/d9/33/1f075bf72b0b747cb3288d011319aaf64083cf2efef8354174e3ed4540e2/ipython_pygments_lexers-1.1.1-py3-none-any.whl"
+    },
+    {
+      "name": "jedi",
+      "version": "0.20.0",
+      "filename": "jedi-0.20.0-py2.py3-none-any.whl",
+      "sha256": "7bdd9c2634f56713299976f4cbd59cb3fa92165cc5e05ea811fb253480728b67",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/9a/93/242e2eab5fe682ffcb8b0084bde703a41d51e17ee0f3a31ff0d9d813620a/jedi-0.20.0-py2.py3-none-any.whl"
     },
     {
       "name": "jiwer",
@@ -530,6 +578,14 @@
       "source": "https://files.pythonhosted.org/packages/43/57/4526ca0e214a3d158690e3393f6d547a2f8070f88d6388ab21d5b0aac8a1/marshmallow-4.3.1-py3-none-any.whl"
     },
     {
+      "name": "matplotlib",
+      "version": "3.11.1",
+      "filename": "matplotlib-3.11.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "sha256": "aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/f0/f0/9b4298911303f74e6d83e64a81d996c0616405ec95046fac7f17e4258b9e/matplotlib-3.11.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    },
+    {
       "name": "matplotlib-inline",
       "version": "0.2.2",
       "filename": "matplotlib_inline-0.2.2-py3-none-any.whl",
@@ -552,6 +608,14 @@
       "sha256": "c74370808b445666f95272bfdf0eb5707a43b7e05e5527f2dd0830e6892f976f",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/e3/a0/0d55c59ea8a5f1b13b3eb931e1c0eab9c2a07322cad79cb51a596d2d2a5c/mediapy-1.1.6-py3-none-any.whl"
+    },
+    {
+      "name": "ml_dtypes",
+      "version": "0.5.4",
+      "filename": "ml_dtypes-0.5.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "19b9a53598f21e453ea2fbda8aa783c20faff8e1eeb0d7ab899309a0053f1483",
+      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
+      "source": "https://files.pythonhosted.org/packages/a9/80/19189ea605017473660e43762dc853d2797984b3c7bf30ce656099add30c/ml_dtypes-0.5.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
       "name": "more-itertools",
@@ -650,12 +714,28 @@
       "source": "https://files.pythonhosted.org/packages/ca/6f/a04e900f465ff3221ccc395522503e2d10e79fa21f2723c8e177aae1e0d1/opentelemetry_api-1.44.0-py3-none-any.whl"
     },
     {
+      "name": "optuna",
+      "version": "4.9.0",
+      "filename": "optuna-4.9.0-py3-none-any.whl",
+      "sha256": "f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/ab/f3/e5fcd5d9b15771ed6dc10e3a7eeddc672e418f4f4c4653d216cc1d857e2d/optuna-4.9.0-py3-none-any.whl"
+    },
+    {
       "name": "packaging",
       "version": "24.2",
       "filename": "packaging-24.2-py3-none-any.whl",
       "sha256": "09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/88/ef/eb23f262cca3c0c4eb7ab1933c3b1f03d021f2c48f54763065b6f0e321be/packaging-24.2-py3-none-any.whl"
+    },
+    {
+      "name": "pandas",
+      "version": "3.0.5",
+      "filename": "pandas-3.0.5-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "2c0cf1dd9b55a22d105fc46c1b489af3bd42264fcba7c66297bf47a9a1d9c78a",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/d1/50/d6cc4d7e508bbccf5d6027314a8312bc7ac73d0ec7f195f53838daafab40/pandas-3.0.5-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
       "name": "parso",
@@ -784,6 +864,14 @@
       "sha256": "46be797cdade26c82773e5018659ae610145260069c7c5bf3d3c8a029ade8e22",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/6c/7d/035b370ab834b30e849fe9cd092b7bd7f321fcc4a2c56b84e96476b7ede5/pyannote.metrics-3.2.1-py3-none-any.whl"
+    },
+    {
+      "name": "pyarrow",
+      "version": "25.0.1",
+      "filename": "pyarrow-25.0.1-cp311-cp311-manylinux_2_28_x86_64.whl",
+      "sha256": "25f8720bf6387d5dc2ebd2622112de630760419e4b66134405dd24110d15f37e",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/c8/6e/d3fafc41f378b2c65be43b827798c0fae42049a641c8526633ed3eb573e2/pyarrow-25.0.1-cp311-cp311-manylinux_2_28_x86_64.whl"
     },
     {
       "name": "pybind11",
@@ -938,6 +1026,14 @@
       "source": "https://files.pythonhosted.org/packages/28/50/f203ff3a3ddfe19308efc83c5a3a29ed02bf786732ec35e68bf9162f3365/safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
     },
     {
+      "name": "scikit-learn",
+      "version": "1.9.0",
+      "filename": "scikit_learn-1.9.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "f7e254636164090da847715a27f8e5478feb98c40a9e0ee90cbd277de9e5ceb8",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/8d/da/4810a28e473185429e45a57eebcc91fc991b33d889cc0676063e671db03d/scikit_learn-1.9.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
       "name": "scipy",
       "version": "1.17.1",
       "filename": "scipy-1.17.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
@@ -1026,6 +1122,14 @@
       "source": "https://files.pythonhosted.org/packages/86/47/d5964551ca818b7f0c7ef7f3899056263b60ef098a801066350a9672ca8f/soxr-1.1.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
+      "name": "SQLAlchemy",
+      "version": "2.0.52",
+      "filename": "sqlalchemy-2.0.52-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "938325a5373267afc53bfbe72983b20fbd64ca47842aac62433c3da1137ecff1",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/a8/73/e75597b5841043e3c74055d00d4feb53d9a49a5c89ba2450d2d9aab53597/sqlalchemy-2.0.52-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
       "name": "stack-data",
       "version": "0.6.3",
       "filename": "stack_data-0.6.3-py3-none-any.whl",
@@ -1040,6 +1144,22 @@
       "sha256": "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl"
+    },
+    {
+      "name": "tensorboard",
+      "version": "2.20.0",
+      "filename": "tensorboard-2.20.0-py3-none-any.whl",
+      "sha256": "9dc9f978cb84c0723acf9a345d96c184f0293d18f166bb8d59ee098e6cfaaba6",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/9c/d9/a5db55f88f258ac669a92858b70a714bbbd5acd993820b41ec4a96a4d77f/tensorboard-2.20.0-py3-none-any.whl"
+    },
+    {
+      "name": "tensorboard-data-server",
+      "version": "0.7.2",
+      "filename": "tensorboard_data_server-0.7.2-py3-none-manylinux_2_31_x86_64.whl",
+      "sha256": "ef687163c24185ae9754ed5650eb5bc4d84ff257aabdc33f0cc6f74d8ba54530",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/73/c6/825dab04195756cf8ff2e12698f22513b3db2f64925bdd41671bfb33aaa5/tensorboard_data_server-0.7.2-py3-none-manylinux_2_31_x86_64.whl"
     },
     {
       "name": "termcolor",
@@ -1170,6 +1290,14 @@
       "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl"
+    },
+    {
+      "name": "wandb",
+      "version": "0.28.2",
+      "filename": "wandb-0.28.2-py3-none-manylinux_2_28_x86_64.whl",
+      "sha256": "1db698d107871c66b2dcbb0cf4dc2af1ddb159ba94e957e890158ec60ab2de54",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/3c/7f/f3e23a2ff01848d7a5adab9f307992b92ef99c5e6bff2bd89cd46d651e3a/wandb-0.28.2-py3-none-manylinux_2_28_x86_64.whl"
     },
     {
       "name": "wcwidth",
