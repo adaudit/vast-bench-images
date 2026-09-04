@@ -123,6 +123,18 @@ jobs:
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch and verify exact baked model
+        env:
+          MODEL_URL: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.nemo
+          MODEL_SHA256: 3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d
+          MODEL_SIZE_BYTES: 2509332480
+        run: |
+          set -euo pipefail
+          model=vendor/models/parakeet-tdt-0.6b-v3.nemo
+          mkdir -p "${model%/*}"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
+          test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
+          printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
       - name: Build one immutable serverless wrapper
         id: build
         env:
