@@ -1,7 +1,12 @@
-name: Publish Parakeet v3 ASR candidate
+name: Publish known-vulnerable non-production Parakeet v3 canary
 
 on:
   workflow_dispatch:
+    inputs:
+      authorize_known_vulnerable_canary:
+        description: Explicitly authorize the documented canary-only OSV bypass
+        required: true
+        type: boolean
 
 concurrency:
   group: publish-asr-v3-${{ github.sha }}
@@ -16,9 +21,12 @@ permissions:
 
 jobs:
   publish-asr-v3:
+    if: inputs.authorize_known_vulnerable_canary && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: 482204e85c2c9ab440e9351e5495d037c25a37cf
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           driver: docker-container
@@ -26,7 +34,8 @@ jobs:
       - uses: SocketDev/action@2d3f25590c6ed6ba11a9a14c064d962a3a04698f # v1.3.1
         with:
           mode: firewall-free
-      - name: Scan exact source
+      - name: Scan exact source (authorized canary warning)
+        continue-on-error: true
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan --recursive .
@@ -108,7 +117,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          TAG: parakeet-${{ github.sha }}
+          TAG: canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}
         run: bash "$RUNNER_TEMP/refuse-occupied-ghcr-tag"
       - name: Login to GHCR
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
@@ -119,15 +128,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          STAGING_TAG: staging-parakeet-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
+          STAGING_TAG: staging-canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --metadata-file metadata.json -f asr/vast-serverless.Dockerfile -t "$IMAGE:$STAGING_TAG" .
+          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --metadata-file metadata.json --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.canary=known-vulnerable-non-production" -f asr/vast-serverless.Dockerfile -t "$IMAGE:$STAGING_TAG" .
           digest="$(jq -r '."containerimage.digest"' metadata.json)"
           test "$digest" != null
           docker pull "$IMAGE@$digest"
           docker save "$IMAGE@$digest" -o image.tar
-          docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image --archive /workspace/image.tar
+          docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image --archive /workspace/image.tar || echo 'WARNING: authorized known-vulnerable non-production canary OSV result retained in this run log.' >&2
           docker buildx imagetools inspect "$IMAGE@$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Attest final OCI index
@@ -141,7 +151,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          TAG: parakeet-${{ github.sha }}
+          TAG: canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
