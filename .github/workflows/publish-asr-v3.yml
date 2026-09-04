@@ -414,6 +414,7 @@ jobs:
           from pathlib import Path
 
           wheelhouse = Path("vendor/wheelhouses/diar-v1")
+          bootstrap_wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
           wheelhouse.mkdir(parents=True, exist_ok=True)
           artifacts = json.loads(Path("locks/diar-v1.artifacts.json").read_text())["wheels"]
           locked = {
@@ -431,6 +432,15 @@ jobs:
           ]
           if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked.keys():
               raise SystemExit("artifact manifest is not a subset of the lock")
+          for artifact in artifacts:
+              if artifact["source"] != "local audited bootstrap":
+                  continue
+              source = bootstrap_wheelhouse / artifact["filename"]
+              target = wheelhouse / artifact["filename"]
+              if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest() != artifact["sha256"]:
+                  raise SystemExit(f"audited bootstrap wheel is unavailable or corrupt: {source.name}")
+              if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != artifact["sha256"]:
+                  shutil.copy2(source, target)
           for artifact in artifacts:
               target = wheelhouse / artifact["filename"]
               if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == artifact["sha256"]:
