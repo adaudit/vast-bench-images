@@ -181,7 +181,7 @@ jobs:
               and artifact["version"] == locked_entry[0]
               and artifact["sha256"] in locked_entry[1]
           ]
-          if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked:
+          if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked.keys():
               raise SystemExit("artifact manifest is not a subset of the lock")
           for artifact in artifacts:
               target = wheelhouse / artifact["filename"]
