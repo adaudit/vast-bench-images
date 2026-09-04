@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Minimal HTTP boundary for the immutable Parakeet-v3 candidate."""
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -14,6 +15,9 @@ except ModuleNotFoundError:
     from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
     from asr.vast_adapter import ContractError, parse_request
     from asr.parakeet_pool import ParakeetPool
+
+
+LOGGER = logging.getLogger("parakeet.server")
 
 
 class NotReadyError(ContractError):
@@ -89,7 +93,10 @@ class Runtime:
                 audio.write(request.audio); audio.close(); files.append(audio.name)
             model = self.pool.checkout()
             try:
-                return [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+                LOGGER.info("parakeet_inference stage=start")
+                segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+                LOGGER.info("parakeet_inference stage=complete")
+                return segments
             finally:
                 self.pool.checkin(model)
         finally:
@@ -145,9 +152,20 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                 payload = json.loads(self.rfile.read(length))
                 self._send(200, runtime.transcribe(payload) if self.path == "/transcribe" else runtime.transcribe_batch(payload["requests"]))
             except NotReadyError:
+                LOGGER.info("parakeet_http status=503 category=not_ready")
                 self._send(503, {"error": "not ready"})
-            except (ContractError, ValueError, json.JSONDecodeError):
+            except json.JSONDecodeError:
+                LOGGER.info("parakeet_http status=400 category=json")
                 self._send(400, {"error": "invalid request"})
+            except ContractError:
+                LOGGER.info("parakeet_http status=400 category=contract")
+                self._send(400, {"error": "invalid request"})
+            except ValueError as error:
+                LOGGER.info("parakeet_http status=400 category=%s", type(error).__name__)
+                self._send(400, {"error": "invalid request"})
+            except Exception as error:
+                LOGGER.info("parakeet_http status=500 category=%s", type(error).__name__)
+                self._send(500, {"error": "internal error"})
 
         def log_message(self, *_):
             pass

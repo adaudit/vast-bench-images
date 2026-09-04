@@ -16,6 +16,7 @@ MODEL_SHA256 = "3cbdc85877e668ca7b82d0d56770eb1fac76691f55d6b97545e8d61ca588d10d
 MODEL_SIZE_BYTES = 2509332480
 CALIBRATION_SHA256 = "08575f17a02a229d805003df4cd7f518d4134371d6ac4528ebfb56fa75b16af4"
 THRESHOLD = 0.70
+DECODER_FRAME_SECONDS = 0.08
 MODEL_PATH = Path("/workspace/models/parakeet-tdt-0.6b-v3.nemo")
 INPUT_ROOT = Path("/workspace/input")
 OUTPUT_ROOT = Path("/workspace/output")
@@ -125,6 +126,8 @@ def build_candidate(duration, segments):
     previous_start = previous_end = -1.0
     for index, segment in enumerate(segments):
         start, end, confidence = segment["start_seconds"], segment["end_seconds"], segment["confidence"]
+        if index == len(segments) - 1 and _finite(end) and duration < end <= duration + DECODER_FRAME_SECONDS:
+            end = segment["end_seconds"] = duration
         if not isinstance(segment.get("text"), str) or not segment["text"].strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or end > duration or not 0 <= confidence <= 1 or start < previous_start or end < previous_end:
             raise ContractError("unaligned segment evidence")
         previous_start, previous_end = start, end

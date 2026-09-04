@@ -165,10 +165,21 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
     def test_wrapper_bootstrap_contract(self):
         dockerfile = (ROOT / "asr" / "vast-serverless.Dockerfile").read_text()
         entrypoint = (ROOT / "asr" / "vast-entrypoint.sh").read_text()
+        self.assertEqual(
+            [path.name for path in sorted((ROOT / "asr").glob("vast-serverless*.Dockerfile"))],
+            ["vast-serverless.Dockerfile"],
+        )
+        self.assertIn(
+            "FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:",
+            dockerfile,
+        )
+        self.assertNotIn("ghcr.io/adaudit/vast-bench-asr@", dockerfile)
         self.assertIn("USER root", dockerfile)
-        self.assertIn("python3 -m pip check", dockerfile)
-        self.assertIn('python3 -I -c "import vastai"', dockerfile)
-        self.assertLess(dockerfile.index("RUN chmod"), dockerfile.index("ENTRYPOINT"))
+        self.assertIn("pip check", dockerfile)
+        self.assertIn('python -I -c "import vastai"', dockerfile)
+        self.assertIn("COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo", dockerfile)
+        self.assertNotIn("chmod 0444 /workspace/models", dockerfile)
+        self.assertLess(dockerfile.index("COPY --chmod=0755 asr/vast-entrypoint.sh"), dockerfile.index("ENTRYPOINT"))
         self.assertNotIn("USER 65532", dockerfile)
         self.assertIn("openssl req", entrypoint)
         self.assertIn("instance.crt", entrypoint)
@@ -176,8 +187,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         self.assertIn("urllib.request", entrypoint)
         self.assertNotIn("curl --fail", entrypoint)
         self.assertIn("WORKER_PORT", entrypoint)
-        self.assertIn("ENV PARAKEET_INSTANCES=3", dockerfile)
-        self.assertIn("COPY asr/server.py asr/parakeet_pool.py /workspace/", dockerfile)
+        self.assertIn("PARAKEET_INSTANCES=3", dockerfile)
+        self.assertIn("asr/server.py asr/parakeet_pool.py /workspace/", dockerfile)
 
     def test_startup_timeout_accepts_a_quoted_number_in_sh(self):
         entrypoint = (ROOT / "asr" / "vast-entrypoint.sh").read_text()
@@ -244,6 +255,25 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
             http.shutdown(); thread.join(); http.server_close()
         self.assertEqual(body[0]["schema_version"], "asr-candidate-v3")
 
+    def test_public_benchmark_clamps_one_decoder_frame_at_audio_endpoint(self):
+        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
+        try:
+            payload = self._load_worker("decoder_frame_benchmark")["benchmark_payload"]()
+        finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
+        runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: []})(), batch_transcriber=lambda _: [[{"start_seconds": 7.36, "end_seconds": 7.44, "text": "fixture", "confidence": .9}]])
+        http = server.make_server(("127.0.0.1", 0), runtime)
+        thread = threading.Thread(target=http.serve_forever); thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            status, body = self._http(request)
+        finally:
+            http.shutdown(); thread.join(); http.server_close()
+        self.assertEqual(status, 200)
+        self.assertEqual(body[0]["audio_duration_seconds"], 7.435)
+        self.assertEqual(body[0]["segments"][0]["end_seconds"], 7.435)
+        self.assertEqual(body[0]["calibration"]["segment_evidence"][0]["timestamp_end_seconds"], 7.435)
+
     def test_http_health_and_post_are_observation_only_across_startup(self):
         entered, release, loads = threading.Event(), threading.Event(), []
         def loader():
@@ -282,6 +312,26 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
             self.assertEqual(len(loads), 1)
         finally:
             http.shutdown(); thread.join(); http.server_close()
+
+    def test_http_logs_sanitized_inference_stage_and_error_category(self):
+        runtime = server.Runtime(
+            model_verifier=lambda _: None,
+            model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: [object()]})(),
+        )
+        runtime.initialize_once()
+        http = server.make_server(("127.0.0.1", 0), runtime)
+        thread = threading.Thread(target=http.serve_forever); thread.start()
+        try:
+            payload = {"requests": [{"request_version": "parakeet-v3-offline-request-v1", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_filename": "fixture.wav", "audio_duration_seconds": 1, "audio_base64": "UklGRg=="}]}
+            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertLogs("parakeet.server", "INFO") as logs:
+                self.assertEqual(self._http(request), (400, {"error": "invalid request"}))
+        finally:
+            http.shutdown(); thread.join(); http.server_close()
+        joined = "\n".join(logs.output)
+        self.assertIn("parakeet_inference stage=start", joined)
+        self.assertIn("parakeet_http status=400 category=ContractError", joined)
+        self.assertNotIn("private audio", joined)
 
 
 if __name__ == "__main__":

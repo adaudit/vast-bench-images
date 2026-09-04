@@ -146,6 +146,14 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
             with self.assertRaises(offline.ContractError):
                 offline.build_candidate(1, [{"start_seconds": 0, "end_seconds": 1, "text": text, "confidence": .9}])
 
+    def test_candidate_rejects_more_than_one_decoder_frame_past_audio_endpoint(self):
+        with self.assertRaises(offline.ContractError):
+            offline.build_candidate(7.435, [{"start_seconds": 7.36, "end_seconds": 7.516, "text": "fixture", "confidence": .9}])
+
+    def test_candidate_rejects_nonnumeric_final_end_with_contract_error(self):
+        with self.assertRaises(offline.ContractError):
+            offline.build_candidate(7.435, [{"start_seconds": 7.36, "end_seconds": "7.44", "text": "fixture", "confidence": .9}])
+
     def test_extracts_real_nemo_word_timestamps_and_parallel_confidence(self):
         result = SimpleNamespace(
             timestamp={"word": [{"word": "accepted", "start": 0.0, "end": 1.0}, {"word": "selected", "start": 1.0, "end": 2.0}]},
