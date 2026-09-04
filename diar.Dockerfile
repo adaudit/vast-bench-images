@@ -1,31 +1,29 @@
 # syntax=docker/dockerfile:1.7
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c AS deps
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    HF_HOME=/workspace/models \
-    HUGGINGFACE_HUB_CACHE=/workspace/models/hub \
-    NEMO_CACHE_DIR=/workspace/models/nemo \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
+RUN python -m venv "$VIRTUAL_ENV"
+COPY locks/diar-v1.requirements.txt /locks/diar-v1.requirements.txt
+COPY vendor/wheelhouses/diar-v1/ /wheels/
+RUN pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/diar-v1.requirements.txt \
+ && python -I -c 'import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import SortformerEncLabelModel'
 
+FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c
+LABEL io.adaudit.diar.model="nvidia/diar_streaming_sortformer_4spk-v2.1" \
+      io.adaudit.diar.model-revision="fafaab5faa1617a0ca52d38dd3dc4bd636800d3d" \
+      io.adaudit.diar.cuda="cu124"
+ENV DIAR_CONCURRENCY=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_INDEX=1 \
+    VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libgomp1 libsndfile1 openssl \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
-COPY diar/requirements.txt diar/constraints.txt ./
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ffmpeg libsndfile1 pybind11-dev && \
-    python3 -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 -c constraints.txt -r requirements.txt && \
-    apt-get purge -y --auto-remove build-essential pybind11-dev && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    python3 -c 'import torch, torchaudio; from nemo.collections.asr.models import SortformerEncLabelModel; from pyannote.audio import Pipeline; print(torch.__version__, torchaudio.__version__)'
-COPY diar/worker.py diar/rp_handler.py diar/bake_models.py ./
-RUN --mount=type=secret,id=hf_token,required=true \
-    HF_TOKEN="$(cat /run/secrets/hf_token)" python3 bake_models.py && \
-    curl -fsSL --retry 3 \
-      -o /tmp/fixture.mp3 \
-      https://archive.org/download/world_set_free_0907_librivox/the_world_set_free_00_wells.mp3 && \
-    ffmpeg -y -i /tmp/fixture.mp3 -t 3000 -ac 1 -ar 16000 -c:a pcm_s16le /opt/fixture-50min.wav && \
-    rm /tmp/fixture.mp3 && \
-    test -s /opt/fixture-50min.wav && \
-    python3 -c 'import torch; from nemo.collections.asr.models import SortformerEncLabelModel; from pyannote.audio import Pipeline; print(torch.__version__)'
-
-ENV WORKSPACE_ROOT=/workspace \
-    DIAR_CONCURRENCY=8
-CMD ["python3", "rp_handler.py"]
+COPY --from=deps /opt/venv /opt/venv
+COPY --chmod=0444 vendor/models/diar_streaming_sortformer_4spk-v2.1.nemo /workspace/models/diar_streaming_sortformer_4spk-v2.1.nemo
+COPY diar/server.py diar/bake_models.py /workspace/
+COPY diar/vast-pyworker.py /workspace/vast-pyworker/worker.py
+COPY asr/fixtures/audio/2086-149220-0033.wav /workspace/fixtures/2086-149220-0033.wav
+COPY --chmod=0755 diar/vast-entrypoint.sh /workspace/vast-entrypoint.sh
+RUN python /workspace/bake_models.py /workspace/models/diar_streaming_sortformer_4spk-v2.1.nemo
+USER root
+ENTRYPOINT ["/workspace/vast-entrypoint.sh"]
