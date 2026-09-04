@@ -161,7 +161,7 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          python -m pip download --dest vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
+          python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
       - name: Build and prove the offline overlay
         if: inputs.proof_only
         working-directory: source
