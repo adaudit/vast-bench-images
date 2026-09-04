@@ -169,11 +169,11 @@ jobs:
           wheelhouse = Path("vendor/wheelhouses/parakeet-v3")
           artifacts = json.loads(Path("locks/parakeet-v3.artifacts.json").read_text())["wheels"]
           locked = {
-              match.group(1).lower().replace("_", "-")
+              re.sub(r"[_.]+", "-", match.group(1).lower())
               for line in Path("locks/parakeet-v3.requirements.txt").read_text().splitlines()
               if (match := re.match(r"^([A-Za-z0-9_.-]+)==", line))
           }
-          if not {artifact["name"].lower().replace("_", "-") for artifact in artifacts} <= locked:
+          if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked:
               raise SystemExit("artifact manifest is not a subset of the lock")
           for artifact in artifacts:
               target = wheelhouse / artifact["filename"]
