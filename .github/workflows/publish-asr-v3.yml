@@ -50,6 +50,7 @@ jobs:
           set -euo pipefail
           cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
           cp overlay/asr/server.py source/asr/server.py
+          cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf

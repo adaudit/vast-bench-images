@@ -33,8 +33,25 @@ class ContractError(ValueError):
     pass
 
 
+def _number(value):
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        try:
+            value = value.item()
+        except (AttributeError, TypeError, ValueError, OverflowError, RuntimeError):
+            return None
+        if isinstance(value, bool):
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _finite(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return _number(value) is not None
 
 
 def _contained_regular_file(path, root, *, limit=None, magic=None):
@@ -85,22 +102,52 @@ def verify_model(path):
         raise ContractError("baked model checksum mismatch")
 
 
+def _aligned_word_error(index, word, start, end, confidence, check):
+    word_repr = repr(word)
+    if len(word_repr) > 200:
+        word_repr = word_repr[:197] + "..."
+    return ContractError(
+        f"model produced invalid aligned word evidence at index {index}: {check}; "
+        f"word={word_repr}; types(start={type(start).__name__}, "
+        f"end={type(end).__name__}, confidence={type(confidence).__name__})"
+    )
+
+
 def extract_aligned_words(result):
     timestamp = getattr(result, "timestamp", None)
     words = timestamp.get("word") if isinstance(timestamp, dict) else None
     confidences = getattr(result, "word_confidence", None)
     if not isinstance(words, list) or not isinstance(confidences, list) or len(confidences) != len(words):
-        raise ContractError("model produced no aligned word evidence")
+        raise ContractError(
+            "model produced no aligned word evidence: "
+            f"words={type(words).__name__}(len={len(words) if isinstance(words, list) else 'n/a'}), "
+            f"confidences={type(confidences).__name__}(len={len(confidences) if isinstance(confidences, list) else 'n/a'})"
+        )
     if not words:
         return []
     segments = []
-    for word, confidence in zip(words, confidences):
+    for index, (word, confidence) in enumerate(zip(words, confidences)):
         if not isinstance(word, dict):
-            raise ContractError("model produced invalid aligned word evidence")
+            raise _aligned_word_error(index, word, None, None, confidence, "word must be a dict")
         text, start, end = word.get("word"), word.get("start"), word.get("end")
-        if not isinstance(text, str) or not text.strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or not 0 <= confidence <= 1:
-            raise ContractError("model produced invalid aligned word evidence")
-        segments.append({"start_seconds": start, "end_seconds": end, "text": text.strip(), "confidence": confidence})
+        start_number, end_number, confidence_number = (_number(value) for value in (start, end, confidence))
+        if not isinstance(text, str) or not text.strip():
+            raise _aligned_word_error(index, word, start, end, confidence, "text must be a non-empty string")
+        if start_number is None:
+            raise _aligned_word_error(index, word, start, end, confidence, "start must be a finite numeric scalar")
+        if end_number is None:
+            raise _aligned_word_error(index, word, start, end, confidence, "end must be a finite numeric scalar")
+        if confidence_number is None:
+            raise _aligned_word_error(index, word, start, end, confidence, "confidence must be a finite numeric scalar")
+        if start_number < 0:
+            raise _aligned_word_error(index, word, start, end, confidence, "start must be non-negative")
+        if end_number < start_number:
+            raise _aligned_word_error(index, word, start, end, confidence, "end must not precede start")
+        if not 0 <= confidence_number <= 1:
+            raise _aligned_word_error(index, word, start, end, confidence, "confidence must be within [0, 1]")
+        if end_number == start_number:
+            end_number += DECODER_FRAME_SECONDS
+        segments.append({"start_seconds": start_number, "end_seconds": end_number, "text": text.strip(), "confidence": confidence_number})
     return segments
 
 

@@ -166,6 +166,82 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         with self.assertRaises(offline.ContractError):
             offline.extract_aligned_words(SimpleNamespace(timestamp=result.timestamp, word_confidence=[.9]))
 
+    def test_extract_aligned_words_coerces_real_decoder_scalar_types(self):
+        class ItemScalar:
+            def __init__(self, value):
+                self.value = value
+
+            def item(self):
+                return self
+
+            def __float__(self):
+                return float(self.value)
+
+        try:
+            import numpy
+        except ImportError:
+            start, end = ItemScalar(1.25), ItemScalar(2.5)
+        else:
+            start, end = numpy.float32(1.25), numpy.float32(2.5)
+        try:
+            import torch
+        except ImportError:
+            confidence = ItemScalar(.75)
+        else:
+            confidence = torch.tensor(.75)
+
+        segments = offline.extract_aligned_words(SimpleNamespace(
+            timestamp={"word": [{"word": "scalar", "start": start, "end": end}]},
+            word_confidence=[confidence],
+        ))
+
+        self.assertEqual(segments, [{"start_seconds": 1.25, "end_seconds": 2.5, "text": "scalar", "confidence": .75}])
+        self.assertTrue(all(isinstance(value, float) for value in segments[0].values() if not isinstance(value, str)))
+
+    def test_extract_aligned_words_bumps_zero_length_word_by_decoder_frame(self):
+        segments = offline.extract_aligned_words(SimpleNamespace(
+            timestamp={"word": [{"word": "zero", "start": 1, "end": 1}]},
+            word_confidence=[.5],
+        ))
+
+        self.assertEqual(segments[0]["end_seconds"], 1 + offline.DECODER_FRAME_SECONDS)
+
+    def test_extract_aligned_words_reports_descending_end_with_index(self):
+        with self.assertRaisesRegex(offline.ContractError, r"index 0.*end") as caught:
+            offline.extract_aligned_words(SimpleNamespace(
+                timestamp={"word": [{"word": "backward", "start": 2, "end": 1}]},
+                word_confidence=[.5],
+            ))
+
+        self.assertIn("word={'word': 'backward', 'start': 2, 'end': 1}", str(caught.exception))
+        self.assertIn("types(start=int, end=int, confidence=float)", str(caught.exception))
+    def test_extract_aligned_words_rejects_confidence_above_one(self):
+        with self.assertRaisesRegex(offline.ContractError, r"confidence"):
+            offline.extract_aligned_words(SimpleNamespace(
+                timestamp={"word": [{"word": "overconfident", "start": 0, "end": 1}]},
+                word_confidence=[1.2],
+            ))
+
+
+    def test_extract_aligned_words_keeps_bad_evidence_rejections_specific(self):
+        with self.assertRaisesRegex(offline.ContractError, r"no aligned word evidence.*words=NoneType\(len=n/a\).*confidences=list\(len=0\)"):
+            offline.extract_aligned_words(SimpleNamespace(timestamp={}, word_confidence=[]))
+        cases = (
+            (["not a word"], [.5]),
+            ([{"word": "", "start": 0, "end": 1}], [.5]),
+            ([{"word": "negative", "start": -1, "end": 1}], [.5]),
+            ([{"word": "not finite", "start": 0, "end": float("nan")}], [.5]),
+        )
+        for words, confidences in cases:
+            with self.subTest(words=words), self.assertRaisesRegex(offline.ContractError, r"index 0.*types\(start=.*end=.*confidence=.*\)"):
+                offline.extract_aligned_words(SimpleNamespace(timestamp={"word": words}, word_confidence=confidences))
+
+    def test_extract_aligned_words_truncates_word_repr_in_error(self):
+        word = {"padding": "x" * 400, "word": "", "start": 0, "end": 1}
+        with self.assertRaises(offline.ContractError) as caught:
+            offline.extract_aligned_words(SimpleNamespace(timestamp={"word": [word]}, word_confidence=[.5]))
+        rendered_word = str(caught.exception).split("; types", 1)[0].rsplit("word=", 1)[1]
+        self.assertEqual(len(rendered_word), 200)
     def test_request_rejects_url_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "request.json"
@@ -191,6 +267,8 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         for excluded in ("runpod", "whisper", "qwen", "pyannote"):
             self.assertNotIn(excluded, source)
         workflow = (ROOT / ".github" / "workflows" / "publish-asr-v3.yml").read_text()
+        overlay_step = workflow.split("name: Apply the build-only overlay", 1)[1].split("uses: docker/setup-buildx-action", 1)[0]
+        self.assertIn("cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py", overlay_step)
         staging_tag = "staging-parakeet-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
         final_tag = "parakeet-${{ github.sha }}"
         self.assertIn(staging_tag, workflow)
