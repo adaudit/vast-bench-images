@@ -54,6 +54,7 @@ jobs:
           cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
           cp overlay/asr/vast-pyworker.py source/asr/vast-pyworker.py
           cp overlay/asr/vast-entrypoint.sh source/asr/vast-entrypoint.sh
+          cp overlay/asr/split_venv_layers.py source/asr/split_venv_layers.py
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
@@ -420,6 +421,7 @@ jobs:
           rm -f source/diar/rp_handler.py source/diar/worker.py source/diar/requirements.txt source/diar/constraints.txt
           cp overlay/diar.Dockerfile source/diar.Dockerfile
           cp overlay/diar/server.py overlay/diar/vast-pyworker.py overlay/diar/vast-entrypoint.sh overlay/diar/bake_models.py source/diar/
+          cp overlay/asr/split_venv_layers.py source/asr/split_venv_layers.py
           cp overlay/locks/diar-v1.requirements.txt source/locks/diar-v1.requirements.txt
           cp overlay/locks/diar-v1.artifacts.json source/locks/diar-v1.artifacts.json
           cp overlay/vendor/wheelhouses/parakeet-v3/ctc_segmentation-1.7.4-cp311-cp311-linux_x86_64.whl source/vendor/wheelhouses/parakeet-v3/

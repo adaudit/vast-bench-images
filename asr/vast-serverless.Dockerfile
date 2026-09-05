@@ -5,31 +5,11 @@ ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH PIP_NO_CACHE_DIR=1
 RUN python -m venv "$VIRTUAL_ENV"
 COPY locks/parakeet-v3.requirements.txt /locks/parakeet-v3.requirements.txt
 COPY vendor/wheelhouses/parakeet-v3/ /wheels/
+COPY asr/split_venv_layers.py /split_venv_layers.py
 RUN pip install --no-deps --no-index --find-links /wheels --require-hashes -r /locks/parakeet-v3.requirements.txt \
  && python -I -c 'import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel' \
  && du -sm /opt/venv/lib/python3.11/site-packages/* | sort -rn | head -40 \
- && layers=/layers \
- && site=/opt/venv/lib/python3.11/site-packages \
- && mkdir -p "$layers/venv-base/opt" \
- && cp -a /opt/venv "$layers/venv-base/opt/" \
- && rm -rf "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/cudnn" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/cublas" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/cufft" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/curand" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/cusolver" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/nvidia/cusparse" \
-           "$layers/venv-base/opt/venv/lib/python3.11/site-packages/torch" \
- && mkdir -p "$layers/venv-nvidia-cudnn/opt/venv/lib/python3.11/site-packages/nvidia" \
-              "$layers/venv-nvidia-cublas/opt/venv/lib/python3.11/site-packages/nvidia" \
-              "$layers/venv-nvidia-linear-algebra/opt/venv/lib/python3.11/site-packages/nvidia" \
-              "$layers/venv-torch-cuda/opt/venv/lib/python3.11/site-packages/torch/lib" \
-              "$layers/venv-torch/opt/venv/lib/python3.11/site-packages" \
- && cp -a "$site/nvidia/cudnn" "$layers/venv-nvidia-cudnn/opt/venv/lib/python3.11/site-packages/nvidia/" \
- && cp -a "$site/nvidia/cublas" "$layers/venv-nvidia-cublas/opt/venv/lib/python3.11/site-packages/nvidia/" \
- && cp -a "$site/nvidia/cufft" "$site/nvidia/curand" "$site/nvidia/cusolver" "$site/nvidia/cusparse" "$layers/venv-nvidia-linear-algebra/opt/venv/lib/python3.11/site-packages/nvidia/" \
- && cp -a "$site/torch/lib/libtorch_cuda.so" "$layers/venv-torch-cuda/opt/venv/lib/python3.11/site-packages/torch/lib/" \
- && cp -a "$site/torch" "$layers/venv-torch/opt/venv/lib/python3.11/site-packages/" \
- && rm "$layers/venv-torch/opt/venv/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so"
+ && python /split_venv_layers.py /opt/venv /layers 320 24
 
 FROM --platform=linux/amd64 python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c
 LABEL io.adaudit.asr.model="nvidia/parakeet-tdt-0.6b-v3" \
@@ -41,12 +21,30 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates libgomp1 libsndfile1 openssl \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
-COPY --from=deps --link /layers/venv-base/opt/venv/ /opt/venv/
-COPY --from=deps --link /layers/venv-nvidia-cudnn/opt/venv/ /opt/venv/
-COPY --from=deps --link /layers/venv-nvidia-cublas/opt/venv/ /opt/venv/
-COPY --from=deps --link /layers/venv-nvidia-linear-algebra/opt/venv/ /opt/venv/
-COPY --from=deps --link /layers/venv-torch-cuda/opt/venv/ /opt/venv/
-COPY --from=deps --link /layers/venv-torch/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-00/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-01/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-02/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-03/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-04/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-05/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-06/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-07/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-08/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-09/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-10/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-11/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-12/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-13/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-14/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-15/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-16/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-17/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-18/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-19/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-20/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-21/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-22/opt/venv/ /opt/venv/
+COPY --from=deps --link /layers/venv-23/opt/venv/ /opt/venv/
 COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo.part.00 /workspace/models/parts/parakeet-tdt-0.6b-v3.nemo.part.00
 COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo.part.01 /workspace/models/parts/parakeet-tdt-0.6b-v3.nemo.part.01
 COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo.part.02 /workspace/models/parts/parakeet-tdt-0.6b-v3.nemo.part.02
