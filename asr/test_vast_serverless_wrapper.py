@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from unittest import mock
 import unittest
 import urllib.request
 from urllib.error import HTTPError
@@ -370,7 +371,12 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             http.shutdown(); thread.join(); http.server_close()
 
-    def test_http_logs_sanitized_inference_stage_and_error_category(self):
+    def test_http_logs_contract_reason_for_benchmark_without_word_timestamps(self):
+        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
+        try:
+            payload = self._load_worker("missing_word_timestamps_benchmark")["benchmark_payload"]()
+        finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
         runtime = server.Runtime(
             model_verifier=lambda _: None,
             model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: [object()]})(),
@@ -379,16 +385,25 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         http = server.make_server(("127.0.0.1", 0), runtime)
         thread = threading.Thread(target=http.serve_forever); thread.start()
         try:
-            payload = {"requests": [{"request_version": "parakeet-v3-offline-request-v1", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_filename": "fixture.wav", "audio_duration_seconds": 1, "audio_base64": "UklGRg=="}]}
             request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
             with self.assertLogs("parakeet.server", "INFO") as logs:
                 self.assertEqual(self._http(request), (400, {"error": "invalid request"}))
         finally:
             http.shutdown(); thread.join(); http.server_close()
         joined = "\n".join(logs.output)
-        self.assertIn("parakeet_inference stage=start", joined)
-        self.assertIn("parakeet_http status=400 category=ContractError", joined)
+        self.assertIn("parakeet_http status=400 category=contract reason=model produced no aligned word evidence", joined)
+        self.assertIn("parakeet_batch request_count=1", joined)
+        self.assertIn("parakeet_inference result aligned_words=0 word_confidence_present=False hypothesis_type=object", joined)
         self.assertNotIn("private audio", joined)
+
+    def test_configure_logging_configures_worker_stderr_once(self):
+        with mock.patch.object(server.logging, "basicConfig") as basic_config:
+            server.configure_logging()
+        basic_config.assert_called_once_with(
+            level=server.logging.INFO,
+            stream=server.sys.stderr,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import tempfile
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -18,6 +19,13 @@ except ModuleNotFoundError:
 
 
 LOGGER = logging.getLogger("parakeet.server")
+
+def configure_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
 
 class NotReadyError(ContractError):
@@ -97,7 +105,17 @@ class Runtime:
             model = self.pool.checkout()
             try:
                 LOGGER.info("parakeet_inference stage=start")
-                segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+                hypotheses = model.transcribe(files, batch_size=len(files), timestamps=True)
+                for hypothesis in hypotheses:
+                    timestamp = getattr(hypothesis, "timestamp", None)
+                    words = timestamp.get("word") if isinstance(timestamp, dict) else None
+                    LOGGER.info(
+                        "parakeet_inference result aligned_words=%d word_confidence_present=%s hypothesis_type=%s",
+                        len(words) if isinstance(words, list) else 0,
+                        getattr(hypothesis, "word_confidence", None) is not None,
+                        type(hypothesis).__name__,
+                    )
+                segments = [extract_aligned_words(hypothesis) for hypothesis in hypotheses]
                 LOGGER.info("parakeet_inference stage=complete")
                 return segments
             finally:
@@ -114,6 +132,13 @@ class Runtime:
         if not self.ready:
             raise NotReadyError("runtime is not ready")
         requests = [parse_request(payload) for payload in payloads]
+        LOGGER.info(
+            "parakeet_batch request_count=%d filenames=%s durations=%s audio_bytes=%s",
+            len(requests),
+            [request.audio_filename for request in requests],
+            [request.audio_duration_seconds for request in requests],
+            [len(request.audio) for request in requests],
+        )
         if not 0 < len(requests) <= 32: raise ContractError("batch is outside the permitted limit")
         if self.batch_transcriber: segments = self.batch_transcriber(requests)
         elif self.transcriber: segments = [self.transcriber(request) for request in requests]
@@ -157,14 +182,14 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
             except NotReadyError:
                 LOGGER.info("parakeet_http status=503 category=not_ready")
                 self._send(503, {"error": "not ready"})
-            except json.JSONDecodeError:
-                LOGGER.info("parakeet_http status=400 category=json")
+            except json.JSONDecodeError as error:
+                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
                 self._send(400, {"error": "invalid request"})
-            except ContractError:
-                LOGGER.info("parakeet_http status=400 category=contract")
+            except ContractError as error:
+                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
                 self._send(400, {"error": "invalid request"})
             except ValueError as error:
-                LOGGER.info("parakeet_http status=400 category=%s", type(error).__name__)
+                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
                 self._send(400, {"error": "invalid request"})
             except Exception as error:
                 LOGGER.exception("parakeet_http status=500 category=%s", type(error).__name__)
@@ -176,5 +201,10 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
     return ThreadingHTTPServer(address, Handler)
 
 
-if __name__ == "__main__":
+def main():
+    configure_logging()
     make_server().serve_forever()
+
+
+if __name__ == "__main__":
+    main()
