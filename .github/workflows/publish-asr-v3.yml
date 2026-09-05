@@ -210,16 +210,69 @@ jobs:
                   temporary.unlink(missing_ok=True)
           PY
           python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux1_x86_64 --platform manylinux2010_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux_2_12_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_24_x86_64 --platform manylinux_2_27_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_31_x86_64 --platform linux_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
-      - name: Build and prove the offline overlay
+      - name: Build real-model benchmark image
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
+      - name: Real-model benchmark on CPU
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          container="$(docker run --detach --rm --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --entrypoint python3 "$CPU_BENCHMARK_IMAGE" /workspace/server.py)"
+          cleanup() {
+            docker logs "$container" || true
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          deadline=$((SECONDS + 900))
+          while :; do
+            health="$(python3 -c 'import json
+          from urllib.request import urlopen
+          try:
+              with urlopen("http://127.0.0.1:8080/healthz", timeout=5) as response:
+                  print(json.load(response).get("status", ""))
+          except Exception:
+              pass' || true)"
+            [ "$health" = ready ] && break
+            [ "$SECONDS" -lt "$deadline" ] || { echo "real-model server did not become ready" >&2; exit 1; }
+            sleep 5
+          done
+          VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
+          import json
+          import runpy
+          import sys
+          import types
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          fake = types.ModuleType("vastai")
+          fake.BenchmarkConfig = fake.HandlerConfig = fake.LogActionConfig = fake.WorkerConfig = lambda **kwargs: kwargs
+          fake.Worker = lambda _: type("Worker", (), {"run": lambda self: None})()
+          sys.modules["vastai"] = fake
+          payload = runpy.run_path("asr/vast-pyworker.py", run_name="cpu_benchmark")["benchmark_payload"]()
+          request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+          try:
+              with urlopen(request, timeout=900) as response:
+                  status, body = response.status, response.read()
+          except HTTPError as error:
+              status, body = error.code, error.read()
+          print(f"benchmark status={status}")
+          print(f"benchmark body_head={body[:2000].decode('utf-8', 'replace')}")
+          if status != 200:
+              raise SystemExit(f"real-model benchmark returned HTTP {status}")
+          PY
+      - name: Prove offline imports
         if: inputs.proof_only
         working-directory: source
         env:
-          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
-          PROOF_IMAGE: local/parakeet-v3-overlay-proof:${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$PROOF_IMAGE" .
-          docker run --rm --entrypoint python "$PROOF_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel"
+          CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker run --rm --entrypoint python "$CPU_BENCHMARK_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel"
       - name: Build one immutable serverless wrapper
         if: '!inputs.proof_only'
         id: build
