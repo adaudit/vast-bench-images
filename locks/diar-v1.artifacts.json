@@ -113,11 +113,11 @@
     },
     {
       "name": "bitsandbytes",
-      "version": "0.45.5",
-      "filename": "bitsandbytes-0.45.5-py3-none-manylinux_2_24_x86_64.whl",
-      "sha256": "a5453f30cc6aab6ccaac364e6bf51a7808d3da5f71763dffeb6d9694c59136e4",
+      "version": "0.46.0",
+      "filename": "bitsandbytes-0.46.0-py3-none-manylinux_2_24_x86_64.whl",
+      "sha256": "ef38883cfd26f36a0dfff1715f620f87cee3813431f33e10e9658205160cb89b",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
-      "source": "https://files.pythonhosted.org/packages/07/b7/cb5ce4d1a382cf53c19ef06c5fc29e85f5e129b4da6527dd207d90a5b8ad/bitsandbytes-0.45.5-py3-none-manylinux_2_24_x86_64.whl"
+      "source": "https://files.pythonhosted.org/packages/72/27/ec6ee3408e09e01ab05db07af5a97dc76db7bc18824cf5f5dbc98e1e08a4/bitsandbytes-0.46.0-py3-none-manylinux_2_24_x86_64.whl"
     },
     {
       "name": "braceexpand",
@@ -184,20 +184,14 @@
       "source": "https://files.pythonhosted.org/packages/5f/4b/6157f24ca425b89fe2eb7e7be642375711ab671135be21e6faa100f7448c/contourpy-1.3.3-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
-      "name": "cycler",
-      "version": "0.12.1",
-      "filename": "cycler-0.12.1-py3-none-any.whl",
-      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+      "name": "ctc-segmentation",
+      "version": "1.7.4",
+      "filename": "ctc_segmentation-1.7.4-cp311-cp311-linux_x86_64.whl",
+      "sha256": "e105ffc70ef98a15f7d8f30477135235681b8a6d8a2b156aae53efd2de3631f3",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
-      "source": "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl"
-    },
-    {
-      "name": "cytoolz",
-      "version": "1.1.0",
-      "filename": "cytoolz-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
-      "sha256": "ac266a34437812cf841cecbfe19f355ab9c3dd1ef231afc60415d40ff12a76e4",
-      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
-      "source": "https://files.pythonhosted.org/packages/ed/a2/4a3400e4d07d3916172bf74fede08020d7b4df01595d8a97f1e9507af5ae/cytoolz-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+      "source": "local audited bootstrap",
+      "source_archive": "local audited source archive: ctc_segmentation-1.7.4.tar.gz",
+      "source_archive_sha256": "19d383ea5f22438ebb1699d72b22078b63f351a33fa50bedb19c14077ba6a116"
     },
     {
       "name": "cuda-bindings",
@@ -222,6 +216,30 @@
       "sha256": "23a1fc406d491eef7a7e985095725cb7b20a04a7bd9b7a66400e5c86e082e0aa",
       "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
       "source": "https://files.pythonhosted.org/packages/c1/9d/05e753afbaac3f92691059b3ba875589c98a425d69e5808cec32b31b580c/cuda_python-12.9.7-py3-none-any.whl"
+    },
+    {
+      "name": "cycler",
+      "version": "0.12.1",
+      "filename": "cycler-0.12.1-py3-none-any.whl",
+      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl"
+    },
+    {
+      "name": "cython",
+      "version": "3.3.0",
+      "filename": "cython-3.3.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "e6035b5231a9316edc19d6415f4296fd1d0370e2a165a714b3edc167b9ca00e1",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/3f/9b/dd726d11b2aff24f0c3fa68ce9e3934097a058aca471a8cc9888aeae5471/cython-3.3.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+      "name": "cytoolz",
+      "version": "1.1.0",
+      "filename": "cytoolz-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "ac266a34437812cf841cecbfe19f355ab9c3dd1ef231afc60415d40ff12a76e4",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/ed/a2/4a3400e4d07d3916172bf74fede08020d7b4df01595d8a97f1e9507af5ae/cytoolz-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
       "name": "datasets",
@@ -659,11 +677,11 @@
     },
     {
       "name": "nemo-toolkit",
-      "version": "2.4.1",
-      "filename": "nemo_toolkit-2.4.1-py3-none-any.whl",
-      "sha256": "a13fb853a40cbdd8dca7a4ca8c34536d2fb59246b5f5fdbea3be96710c451faa",
+      "version": "2.5.3",
+      "filename": "nemo_toolkit-2.5.3-py3-none-any.whl",
+      "sha256": "17fb705e002cb38c753c0d0804d66b8cec4d0d86f878ba8a41049bcd9c7ae7d6",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
-      "source": "https://files.pythonhosted.org/packages/35/f3/6f639346b3e9c93619f2dfbba3d0309106454e917c03376928b35427a99d/nemo_toolkit-2.4.1-py3-none-any.whl"
+      "source": "https://files.pythonhosted.org/packages/6c/2a/d5f68c753705c6d8f2767c753df60bdb70301669039d54aadcec760831be/nemo_toolkit-2.5.3-py3-none-any.whl"
     },
     {
       "name": "num2words",
@@ -688,6 +706,30 @@
       "sha256": "666dbfb6ec68962c033a450943ded891bed2d54e6755e35e5835d63f4f6931d5",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/3a/d0/edc009c27b406c4f9cbc79274d6e46d634d139075492ad055e3d68445925/numpy-1.26.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    },
+    {
+      "name": "nv-one-logger-core",
+      "version": "2.3.1",
+      "filename": "nv_one_logger_core-2.3.1-py3-none-any.whl",
+      "sha256": "0c8b77bcdac4daa1ea913bf8d4afd2a057bd5526e3654ac39f67caba157341a6",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/ee/c4/ea91554c4fcbff66057f667690101d7a4b965605741350ac661b03fa6c46/nv_one_logger_core-2.3.1-py3-none-any.whl"
+    },
+    {
+      "name": "nv-one-logger-pytorch-lightning-integration",
+      "version": "2.3.1",
+      "filename": "nv_one_logger_pytorch_lightning_integration-2.3.1-py3-none-any.whl",
+      "sha256": "f92904055fb0082516480cc1e3dd0bb6cedb2b033985ebfd4814b9cbf7da2cb2",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/f0/56/01a55efb365b6864646b4ac941a1d9de66f024e880764510ba5a7a63f62c/nv_one_logger_pytorch_lightning_integration-2.3.1-py3-none-any.whl"
+    },
+    {
+      "name": "nv-one-logger-training-telemetry",
+      "version": "2.3.1",
+      "filename": "nv_one_logger_training_telemetry-2.3.1-py3-none-any.whl",
+      "sha256": "5319443829b59378a498c3c62ac98973e14f31be675c229ff2b14e2fe109aa0b",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/e5/15/97e6e4ddfe5fc35bcee74a45b7c33fb73abb83713c7dfa26420b971a86c3/nv_one_logger_training_telemetry-2.3.1-py3-none-any.whl"
     },
     {
       "name": "omegaconf",
@@ -720,6 +762,14 @@
       "sha256": "f52f3be6148654850c92a5860d398fd88ec6b2c84ab68d9c3d07dcff02e7afee",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/ab/f3/e5fcd5d9b15771ed6dc10e3a7eeddc672e418f4f4c4653d216cc1d857e2d/optuna-4.9.0-py3-none-any.whl"
+    },
+    {
+      "name": "overrides",
+      "version": "7.7.0",
+      "filename": "overrides-7.7.0-py3-none-any.whl",
+      "sha256": "c7ed9d062f78b8e4c1a7b70bd8796b35ead4d9f510227ef9c5dc7626c60d7e49",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/2c/ab/fc8290c6a4c722e5514d80f62b2dc4c4df1a68a41d1364e625c35990fcf3/overrides-7.7.0-py3-none-any.whl"
     },
     {
       "name": "packaging",
@@ -1138,6 +1188,14 @@
       "source": "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl"
     },
     {
+      "name": "strenum",
+      "version": "0.4.15",
+      "filename": "StrEnum-0.4.15-py3-none-any.whl",
+      "sha256": "a30cda4af7cc6b5bf52c8055bc4bf4b2b6b14a93b574626da33df53cf7740659",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/81/69/297302c5f5f59c862faa31e6cb9a4cd74721cd1e052b38e464c5b402df8b/StrEnum-0.4.15-py3-none-any.whl"
+    },
+    {
       "name": "tabulate",
       "version": "0.10.0",
       "filename": "tabulate-0.10.0-py3-none-any.whl",
@@ -1212,6 +1270,14 @@
       "source": "https://files.pythonhosted.org/packages/f2/90/273b6c7ec78af547694eddeea9e05de771278bd20476525ab930cecaf7d8/tokenizers-0.21.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
     },
     {
+      "name": "toml",
+      "version": "0.10.2",
+      "filename": "toml-0.10.2-py2.py3-none-any.whl",
+      "sha256": "806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl"
+    },
+    {
       "name": "toolz",
       "version": "1.1.0",
       "filename": "toolz-1.1.0-py3-none-any.whl",
@@ -1245,11 +1311,11 @@
     },
     {
       "name": "transformers",
-      "version": "4.51.3",
-      "filename": "transformers-4.51.3-py3-none-any.whl",
-      "sha256": "fd3279633ceb2b777013234bbf0b4f5c2d23c4626b05497691f00cfda55e8a83",
+      "version": "4.53.3",
+      "filename": "transformers-4.53.3-py3-none-any.whl",
+      "sha256": "5aba81c92095806b6baf12df35d756cf23b66c356975fb2a7fa9e536138d7c75",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
-      "source": "https://files.pythonhosted.org/packages/a9/b6/5257d04ae327b44db31f15cce39e6020cc986333c715660b1315a9724d82/transformers-4.51.3-py3-none-any.whl"
+      "source": "https://files.pythonhosted.org/packages/41/b1/d7520cc5cb69c825599042eb3a7c986fa9baa8a8d2dea9acd78e152c81e2/transformers-4.53.3-py3-none-any.whl"
     },
     {
       "name": "typeguard",
