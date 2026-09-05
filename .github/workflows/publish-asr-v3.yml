@@ -49,14 +49,10 @@ jobs:
       - name: Apply the build-only overlay
         run: |
           set -euo pipefail
-          cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
-          cp overlay/asr/server.py source/asr/server.py
-          cp overlay/asr/vast_adapter.py source/asr/vast_adapter.py
-          cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
-          cp overlay/asr/vast-pyworker.py source/asr/vast-pyworker.py
-          cp overlay/asr/vast-entrypoint.sh source/asr/vast-entrypoint.sh
-          cp overlay/asr/parakeet_pool.py source/asr/parakeet_pool.py
-          cp overlay/asr/split_venv_layers.py source/asr/split_venv_layers.py
+          # Overlay the complete asr/ runtime tree (Python, shell, Dockerfile). A hand-kept file list
+          # silently shipped stale modules three times; copying the tree makes the overlay total.
+          find overlay/asr -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' -o -name '*.Dockerfile' \) -exec cp {} source/asr/ \;
+          test -f source/asr/vast-serverless.Dockerfile && test -f source/asr/parakeet_pool.py
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
