@@ -625,7 +625,7 @@ jobs:
           CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          container="$(docker run --detach --rm --name diar-real-entrypoint-readiness --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
+          container="$(docker run --detach --name diar-real-entrypoint-readiness --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
@@ -637,6 +637,7 @@ jobs:
             if printf '%s\n' "$logs" | grep -Fq 'Got log line indicating model is loaded' || printf '%s\n' "$logs" | grep -Fq 'Running benchmark'; then
               break
             fi
+            if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != true ]; then echo "entrypoint exited early (code $(docker inspect -f '{{.State.ExitCode}}' "$container"))" >&2; docker logs "$container" >&2 || true; exit 1; fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "entrypoint did not start PyWorker or benchmark" >&2; exit 1; }
             sleep 5
           done
