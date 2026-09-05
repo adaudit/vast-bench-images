@@ -32,7 +32,7 @@ fi
 
 export REPORT_ADDR="$report_addr" WORKER_PORT USE_SSL UNSECURED
 : > "$log"
-python3 /workspace/server.py >>"$log" 2>&1 &
+python3 /workspace/server.py 2>&1 | tee -a "$log" >&2 &
 
 while :; do
   health=$(python3 -c '

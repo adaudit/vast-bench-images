@@ -1,6 +1,9 @@
 import base64
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -124,6 +127,44 @@ class DiarServerTest(unittest.TestCase):
         status, response = self.request(address + "/diarize", multipart, f"multipart/form-data; boundary={boundary}")
         self.assertEqual(status, 200)
         self.assertEqual(response["engine"], "sortformer")
+
+    def test_pyworker_benchmark_payload_loads_in_isolated_process(self):
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "asr/fixtures/audio/2086-149220-0033.wav"
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_root = Path(temporary)
+            (fake_root / "vastai.py").write_text(
+                "class _Config:\n"
+                "    def __init__(self, **kwargs):\n"
+                "        self.kwargs = kwargs\n"
+                "BenchmarkConfig = HandlerConfig = LogActionConfig = WorkerConfig = _Config\n"
+                "class Worker:\n"
+                "    def __init__(self, _config):\n"
+                "        pass\n"
+                "    def run(self):\n"
+                "        pass\n"
+            )
+            probe = """
+import base64
+import os
+import runpy
+import sys
+
+sys.path.insert(0, os.environ["PYTHONPATH"])
+module = runpy.run_path(sys.argv[1])
+payload = module["benchmark_payload"]()
+audio = base64.b64decode(payload["audio_base64"])
+assert len(audio) == 237964
+assert audio[:4] == b"RIFF"
+"""
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", probe, str(root / "diar/vast-pyworker.py")],
+                capture_output=True,
+                check=False,
+                env={**os.environ, "PYTHONPATH": str(fake_root), "VAST_BENCHMARK_ARTIFACT": str(fixture)},
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_http_error_paths_and_initialization_failure(self):
         runtime, _ = self.runtime()
