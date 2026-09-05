@@ -55,6 +55,7 @@ jobs:
           cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
           cp overlay/asr/vast-pyworker.py source/asr/vast-pyworker.py
           cp overlay/asr/vast-entrypoint.sh source/asr/vast-entrypoint.sh
+          cp overlay/asr/parakeet_pool.py source/asr/parakeet_pool.py
           cp overlay/asr/split_venv_layers.py source/asr/split_venv_layers.py
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
