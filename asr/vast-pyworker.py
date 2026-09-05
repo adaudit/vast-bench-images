@@ -52,12 +52,24 @@ async def validated_response(client_request, model_response):
 
     method = getattr(client_request, "method", "POST")
     route = getattr(client_request, "path", "/transcribe-batch")
+    client_body = None
+    try:
+        client_body = await client_request.json()
+        requests = client_body["payload"]["requests"] if isinstance(client_body.get("payload"), dict) else client_body["requests"]
+    except (KeyError, TypeError):
+        keys = list(client_body) if isinstance(client_body, dict) else []
+        LOGGER.exception(
+            "pyworker envelope failure method=%s route=%s keys=%s",
+            method, route, keys,
+        )
+        return web.json_response({"error": "pyworker envelope", "keys": keys}, status=500)
+
     status = getattr(model_response, "status", None)
     body = b""
     try:
         body = await model_response.read()
         if status == 200:
-            validate_batch(json.loads(body), (await client_request.json())["requests"])
+            validate_batch(json.loads(body), requests)
     except Exception:
         LOGGER.exception(
             "pyworker upstream failure method=%s route=%s status=%s body=%s",

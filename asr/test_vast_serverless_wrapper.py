@@ -37,16 +37,25 @@ class VastServerlessWrapperTest(unittest.TestCase):
         artifact = ROOT / "asr" / "fixtures" / "audio" / "2086-149220-0033.wav"
         return directory, {"VAST_BENCHMARK_ARTIFACT": str(artifact)}
 
-    def _validated_response(self, generator, payload, body, status=200):
+    def _validated_response(self, generator, payload, body, status=200, request_body=None):
         class Response:
             def __init__(self, **kwargs): self.kwargs = kwargs
         class Request:
-            async def json(self): return payload
+            async def json(self):
+                return {"auth_data": {}, "session_id": None, "payload": payload} if request_body is None else request_body
         class ModelResponse:
             def __init__(self):
                 self.status, self.content_type, self.headers = status, "application/json", {"Content-Type": "application/json"}
             async def read(self): return body
-        fake = ModuleType("aiohttp"); fake.web = type("Web", (), {"Response": Response})
+        fake = ModuleType("aiohttp")
+        fake.web = type("Web", (), {
+            "Response": Response,
+            "json_response": lambda value, status: Response(
+                body=json.dumps(value).encode(),
+                status=status,
+                content_type="application/json",
+            ),
+        })
         previous = sys.modules.get("aiohttp"); sys.modules["aiohttp"] = fake
         try:
             return asyncio.run(generator(Request(), ModelResponse()))
@@ -166,7 +175,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 request = {"audio_duration_seconds": 7.435}
 complete = [{"schema_version": "asr-candidate-v3", "disposition": "speech", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_duration_seconds": 7.435, "segments": [{"start_seconds": 0, "end_seconds": 1, "text": "fixture", "confidence": .9}], "selected_segment_indexes": [], "calibration": {"corpus_sha256": "0" * 64, "metric": "segment_brier_score", "threshold": .7, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": [{"segment_index": 0, "raw_confidence": .9, "calibrated_confidence": .8, "timestamp_start_seconds": 0, "timestamp_end_seconds": 1}]}}]
 class Request:
-    async def json(self): return {"requests": [request]}
+    async def json(self): return {"auth_data": {}, "session_id": None, "payload": {"requests": [request]}}
 class ModelResponse:
     def __init__(self, body, status): self.body, self.status, self.content_type, self.headers = body, status, "application/json", {"Content-Type": "application/json"}
     async def read(self): return self.body
@@ -271,6 +280,48 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
             response = self._validated_response(namespace["validated_response"], {"requests": []}, b"upstream rejected", status=502)
         self.assertEqual(response.kwargs["status"], 502)
         self.assertIn("method=POST route=/transcribe-batch status=502 body=upstream rejected", "\n".join(logs.output))
+
+    def test_validated_response_accepts_bare_payload(self):
+        namespace = self._load_worker("bare_payload_response_validation")
+        payload = {"requests": [{"audio_duration_seconds": 1.0}]}
+        body = json.dumps([{
+            "schema_version": "asr-candidate-v3",
+            "disposition": "no_speech",
+            "lane": "parakeet_v3",
+            "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+            "audio_duration_seconds": 1.0,
+            "segments": [],
+            "selected_segment_indexes": [],
+            "calibration": {
+                "corpus_sha256": "0" * 64,
+                "metric": "segment_brier_score",
+                "threshold": .7,
+                "decision_rule": "calibrated_confidence < threshold",
+                "segment_evidence": [],
+            },
+        }]).encode()
+        response = self._validated_response(
+            namespace["validated_response"],
+            payload,
+            body,
+            request_body=payload,
+        )
+        self.assertEqual(response.kwargs["status"], 200)
+
+    def test_validated_response_reports_malformed_envelope(self):
+        namespace = self._load_worker("malformed_envelope_response_validation")
+        response = self._validated_response(
+            namespace["validated_response"],
+            {"requests": []},
+            b"[]",
+            request_body={"auth_data": {}, "session_id": None, "payload": {}},
+        )
+        self.assertEqual(response.kwargs["status"], 500)
+        self.assertEqual(
+            json.loads(response.kwargs["body"]),
+            {"error": "pyworker envelope", "keys": ["auth_data", "session_id", "payload"]},
+        )
 
     def test_approved_benchmark_reaches_public_http_contract(self):
         directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)

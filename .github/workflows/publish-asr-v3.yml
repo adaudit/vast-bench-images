@@ -51,6 +51,8 @@ jobs:
           cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
           cp overlay/asr/server.py source/asr/server.py
           cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
+          cp overlay/asr/vast-pyworker.py source/asr/vast-pyworker.py
+          cp overlay/asr/vast-entrypoint.sh source/asr/vast-entrypoint.sh
           cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
           cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
@@ -225,10 +227,12 @@ jobs:
           CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          worker_dir="$(mktemp -d)"
           container="$(docker run --detach --rm --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --entrypoint python3 "$CPU_BENCHMARK_IMAGE" /workspace/server.py)"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
+            rm -rf "$worker_dir"
           }
           trap cleanup EXIT
           deadline=$((SECONDS + 900))
@@ -244,7 +248,10 @@ jobs:
             [ "$SECONDS" -lt "$deadline" ] || { echo "real-model server did not become ready" >&2; exit 1; }
             sleep 5
           done
-          VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
+          docker cp "$container:/workspace/vast-pyworker/." "$worker_dir"
+          PYWORKER_DIR="$worker_dir" VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
+          import asyncio
+          import os
           import json
           import runpy
           import sys
@@ -256,17 +263,46 @@ jobs:
           fake.BenchmarkConfig = fake.HandlerConfig = fake.LogActionConfig = fake.WorkerConfig = lambda **kwargs: kwargs
           fake.Worker = lambda _: type("Worker", (), {"run": lambda self: None})()
           sys.modules["vastai"] = fake
-          payload = runpy.run_path("asr/vast-pyworker.py", run_name="cpu_benchmark")["benchmark_payload"]()
+          worker = runpy.run_path(os.path.join(os.environ["PYWORKER_DIR"], "worker.py"), run_name="cpu_benchmark")
+          payload = worker["benchmark_payload"]()
           request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
           try:
               with urlopen(request, timeout=900) as response:
-                  status, body = response.status, response.read()
+                  status, body, headers = response.status, response.read(), dict(response.headers.items())
           except HTTPError as error:
-              status, body = error.code, error.read()
+              status, body, headers = error.code, error.read(), dict(error.headers.items())
           print(f"benchmark status={status}")
           print(f"benchmark body_head={body[:2000].decode('utf-8', 'replace')}")
           if status != 200:
               raise SystemExit(f"real-model benchmark returned HTTP {status}")
+          class Response:
+              def __init__(self, **kwargs):
+                  self.kwargs = kwargs
+          class ClientRequest:
+              async def json(self):
+                  return {"auth_data": {}, "session_id": None, "payload": payload}
+          class ModelResponse:
+              def __init__(self):
+                  self.status = status
+                  self.content_type = headers.get("Content-Type", "application/json").split(";", 1)[0]
+                  self.headers = headers
+              async def read(self):
+                  return body
+          fake_aiohttp = types.ModuleType("aiohttp")
+          fake_aiohttp.web = types.SimpleNamespace(Response=Response)
+          previous_aiohttp = sys.modules.get("aiohttp")
+          sys.modules["aiohttp"] = fake_aiohttp
+          try:
+              validated = asyncio.run(worker["validated_response"](ClientRequest(), ModelResponse()))
+          finally:
+              if previous_aiohttp is None:
+                  sys.modules.pop("aiohttp", None)
+              else:
+                  sys.modules["aiohttp"] = previous_aiohttp
+          validated_status = validated.kwargs["status"]
+          print(f"validated_response status={validated_status}")
+          if validated_status != 200:
+              raise SystemExit(f"validated_response returned HTTP {validated_status}")
           PY
       - name: Prove offline imports
         if: inputs.proof_only
