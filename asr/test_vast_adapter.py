@@ -238,3 +238,21 @@ class VastAdapterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestitchBoundaryTest(unittest.TestCase):
+    def test_boundary_word_decoded_twice_keeps_monotonic_starts(self):
+        from asr.vast_adapter import batch_and_restitch
+        chunks = ((0.0, 61.0), (59.0, 121.0))
+        first = [{"start_seconds": 59.9, "end_seconds": 60.6, "text": "price", "confidence": .9}]
+        second = [
+            {"start_seconds": 0.4, "end_seconds": 1.3, "text": "price", "confidence": .8},   # 59.4-60.3 duplicate, mostly covered
+            {"start_seconds": 1.5, "end_seconds": 2.1, "text": "is", "confidence": .7},      # 60.5-61.1 overlaps the kept word's tail
+            {"start_seconds": 2.0, "end_seconds": 2.5, "text": "fine", "confidence": .6},
+        ]
+        out = batch_and_restitch([first, second], chunks)
+        self.assertEqual([w["text"] for w in out], ["price", "is", "fine"])
+        starts = [w["start_seconds"] for w in out]; ends = [w["end_seconds"] for w in out]
+        self.assertEqual(starts, sorted(starts)); self.assertEqual(ends, sorted(ends))
+        self.assertTrue(all(e > s for s, e in zip(starts, ends)))
+        self.assertGreaterEqual(out[1]["start_seconds"], out[0]["end_seconds"])

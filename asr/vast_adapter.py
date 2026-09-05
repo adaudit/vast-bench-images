@@ -90,15 +90,24 @@ def slice_wav(audio_bytes, start, end):
 
 
 def batch_and_restitch(batch_segments, chunks):
-    """Restore absolute times while retaining deterministic call/chunk order."""
+    """Restore absolute times while retaining deterministic call/chunk order.
+
+    Adjacent chunks overlap by OVERLAP_SECONDS, so the boundary word is decoded twice with
+    slightly different timing. A word from the next chunk is kept only when it begins after
+    the audio already covered (its midpoint lies beyond covered_end); its start is then clamped
+    to the covered end so starts and ends both stay monotonic, which the candidate contract requires.
+    """
     if len(batch_segments) != len(chunks):
         raise ContractError("batch result count must equal chunk count")
-    result, covered_end = [], -1.0
+    result, covered_end, previous_start = [], -1.0, -1.0
     for segments, (offset, _) in zip(batch_segments, chunks):
         for segment in segments:
-            restored = {**segment, "start_seconds": segment["start_seconds"] + offset, "end_seconds": segment["end_seconds"] + offset}
-            if restored["end_seconds"] <= covered_end:
+            start, end = segment["start_seconds"] + offset, segment["end_seconds"] + offset
+            if end <= covered_end or (start + end) / 2 <= covered_end:
                 continue
-            result.append(restored)
-            covered_end = restored["end_seconds"]
+            start = max(start, covered_end, previous_start)
+            if end <= start:
+                continue
+            result.append({**segment, "start_seconds": start, "end_seconds": end})
+            covered_end, previous_start = end, start
     return result

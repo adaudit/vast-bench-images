@@ -438,7 +438,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         try:
             request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
             with self.assertLogs("parakeet.server", "INFO") as logs:
-                self.assertEqual(self._http(request), (400, {"error": "invalid request"}))
+                status, body = self._http(request)
+                self.assertEqual(status, 400); self.assertEqual(body["error"], "invalid request"); self.assertIn("aligned word", body["reason"])
         finally:
             http.shutdown(); thread.join(); http.server_close()
         joined = "\n".join(logs.output)

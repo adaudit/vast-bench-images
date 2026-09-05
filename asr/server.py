@@ -246,13 +246,13 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                 self._send(503, {"error": "not ready"})
             except json.JSONDecodeError as error:
                 LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request"})
+                self._send(400, {"error": "invalid request", "reason": "invalid JSON"})
             except ContractError as error:
                 LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request"})
+                self._send(400, {"error": "invalid request", "reason": str(error)[:300]})
             except ValueError as error:
                 LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request"})
+                self._send(400, {"error": "invalid request", "reason": str(error)[:300]})
             except Exception as error:
                 LOGGER.exception("parakeet_http status=500 category=%s", type(error).__name__)
                 self._send(500, {"error": "internal error", "type": type(error).__name__, "message": str(error)})
