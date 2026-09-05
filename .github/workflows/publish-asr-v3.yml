@@ -549,16 +549,100 @@ jobs:
                   temporary.unlink(missing_ok=True)
           PY
           python -m pip download --dest vendor/wheelhouses/diar-v1 --find-links vendor/wheelhouses/diar-v1 --only-binary=:all: --no-deps --require-hashes --platform manylinux1_x86_64 --platform manylinux2010_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux_2_12_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_24_x86_64 --platform manylinux_2_27_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_31_x86_64 --platform linux_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/diar-v1.requirements.txt
-      - name: Build and prove the offline overlay
+      - name: Build real-model benchmark image
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f diar.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
+      - name: Real-model benchmark on CPU
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          worker_dir="$(mktemp -d)"
+          container="$(docker run --detach --rm --name diar-real-model-benchmark --publish 8080:8080 --entrypoint python3 "$CPU_BENCHMARK_IMAGE" /workspace/server.py)"
+          cleanup() {
+            docker logs "$container" || true
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            rm -rf "$worker_dir"
+          }
+          trap cleanup EXIT
+          deadline=$((SECONDS + 900))
+          while :; do
+            health="$(python3 -c 'import json
+          from urllib.request import urlopen
+          try:
+              with urlopen("http://127.0.0.1:8080/healthz", timeout=5) as response:
+                  print(json.load(response).get("status", ""))
+          except Exception:
+              pass' || true)"
+            [ "$health" = ready ] && break
+            [ "$SECONDS" -lt "$deadline" ] || { echo "real-model server did not become ready" >&2; exit 1; }
+            sleep 5
+          done
+          docker cp "$container:/workspace/vast-pyworker/." "$worker_dir"
+          PYWORKER_DIR="$worker_dir" python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import runpy
+          import sys
+          import types
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          fake = types.ModuleType("vastai")
+          fake.BenchmarkConfig = fake.HandlerConfig = fake.LogActionConfig = fake.WorkerConfig = lambda **kwargs: kwargs
+          fake.Worker = lambda _: type("Worker", (), {"run": lambda self: None})()
+          sys.modules["vastai"] = fake
+          worker = runpy.run_path(os.path.join(os.environ["PYWORKER_DIR"], "worker.py"), run_name="cpu_benchmark")
+          payload = worker["benchmark_payload"]()
+          request = Request("http://127.0.0.1:8080/diarize", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+          try:
+              with urlopen(request, timeout=900) as response:
+                  status, body = response.status, response.read()
+          except HTTPError as error:
+              status, body = error.code, error.read()
+          print(f"benchmark status={status}")
+          print(f"benchmark body_head={body[:2000].decode('utf-8', 'replace')}")
+          if status != 200:
+              raise SystemExit(f"real-model benchmark returned HTTP {status}")
+          response = json.loads(body)
+          worker["validate_response"](response)
+          if "speaker_turns" not in response:
+              raise SystemExit("real-model benchmark response omitted speaker_turns")
+          PY
+      - name: Real-entrypoint readiness on CPU
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          container="$(docker run --detach --rm --name diar-real-entrypoint-readiness --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
+          cleanup() {
+            docker logs "$container" || true
+            docker rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          deadline=$((SECONDS + 900))
+          while :; do
+            logs="$(docker logs "$container" 2>&1 || true)"
+            if printf '%s\n' "$logs" | grep -Fq 'Got log line indicating model is loaded' || printf '%s\n' "$logs" | grep -Fq 'Running benchmark'; then
+              break
+            fi
+            [ "$SECONDS" -lt "$deadline" ] || { echo "entrypoint did not start PyWorker or benchmark" >&2; exit 1; }
+            sleep 5
+          done
+      - name: Prove offline imports
         if: inputs.proof_only
         working-directory: source
         env:
-          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
-          PROOF_IMAGE: local/diar-v1-overlay-proof:${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f diar.Dockerfile -t "$PROOF_IMAGE" .
-          docker run --rm --entrypoint python "$PROOF_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import SortformerEncLabelModel"
+          CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker run --rm --entrypoint python "$CPU_BENCHMARK_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import SortformerEncLabelModel"
       - name: Build one immutable serverless wrapper
         if: '!inputs.proof_only'
         id: build
