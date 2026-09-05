@@ -711,7 +711,7 @@ jobs:
           CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          container="$(docker run --detach --name diar-real-entrypoint-readiness --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
+          container="$(docker run --detach --name diar-real-entrypoint-readiness --env VAST_TCP_PORT_3000=3000 --env PUBLIC_IPADDR=127.0.0.1 --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
