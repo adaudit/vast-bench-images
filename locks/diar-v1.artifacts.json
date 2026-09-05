@@ -850,6 +850,22 @@
       "source": "https://files.pythonhosted.org/packages/9b/79/db4c66eb228e37d73939dc96fe9acea4903ec72b10f8bbda16b2a3637602/pyannote.core-4.5-py3-none-any.whl"
     },
     {
+      "name": "pyannote.database",
+      "version": "5.1.3",
+      "filename": "pyannote.database-5.1.3-py3-none-any.whl",
+      "sha256": "37887844c7dfbcc075cb591eddc00aff45fae1ed905344e1f43e0090e63bd40a",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/a1/64/92d51a3a05615ba58be8ba62a43f9f9f952d9f3646f7e4fb7826e5a3a24e/pyannote.database-5.1.3-py3-none-any.whl"
+    },
+    {
+      "name": "pyannote.metrics",
+      "version": "3.2.1",
+      "filename": "pyannote.metrics-3.2.1-py3-none-any.whl",
+      "sha256": "46be797cdade26c82773e5018659ae610145260069c7c5bf3d3c8a029ade8e22",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
+      "source": "https://files.pythonhosted.org/packages/6c/7d/035b370ab834b30e849fe9cd092b7bd7f321fcc4a2c56b84e96476b7ede5/pyannote.metrics-3.2.1-py3-none-any.whl"
+    },
+    {
       "name": "pyarrow",
       "version": "25.0.1",
       "filename": "pyarrow-25.0.1-cp311-cp311-manylinux_2_28_x86_64.whl",
