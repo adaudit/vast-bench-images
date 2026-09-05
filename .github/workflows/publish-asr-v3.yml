@@ -171,7 +171,7 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
-          split -b 200M -d -a 2 "$model" "$model.part."
+          split -b 200MB -d -a 2 "$model" "$model.part."
           rm "$model"
       - name: Materialize hash-verified wheelhouse
         working-directory: source
@@ -539,7 +539,7 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
-          split -b 200M -d -a 2 "$model" "$model.part."
+          split -b 200MB -d -a 2 "$model" "$model.part."
           rm "$model"
       - name: Materialize hash-verified wheelhouse
         working-directory: source
