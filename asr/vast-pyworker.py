@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vastai import BenchmarkConfig, HandlerConfig, LogActionConfig, Worker, WorkerConfig
 
 from production_vast_batch import validate_batch
+
+LOGGER = logging.getLogger("parakeet.pyworker")
 
 READY_MARKER = "PARAKEET_SERVER_READY"
 BENCHMARK_ARTIFACT = Path("/workspace/fixtures/2086-149220-0033.wav")
@@ -47,12 +50,30 @@ async def validated_response(client_request, model_response):
     """Fail the benchmark when its successful response is not a complete v3 batch."""
     from aiohttp import web
 
-    body = await model_response.read()
-    if model_response.status == 200:
-        validate_batch(json.loads(body), (await client_request.json())["requests"])
+    method = getattr(client_request, "method", "POST")
+    route = getattr(client_request, "path", "/transcribe-batch")
+    status = getattr(model_response, "status", None)
+    body = b""
+    try:
+        body = await model_response.read()
+        if status == 200:
+            validate_batch(json.loads(body), (await client_request.json())["requests"])
+    except Exception:
+        LOGGER.exception(
+            "pyworker upstream failure method=%s route=%s status=%s body=%s",
+            method, route, status, body[:500].decode("utf-8", "replace"),
+        )
+        raise
+    if status != 200:
+        LOGGER.error(
+            "pyworker benchmark/proxy outcome method=%s route=%s status=%s body=%s",
+            method, route, status, body[:500].decode("utf-8", "replace"),
+        )
+    else:
+        LOGGER.info("pyworker benchmark/proxy outcome method=%s route=%s status=200", method, route)
     return web.Response(
         body=body,
-        status=model_response.status,
+        status=status,
         content_type=model_response.content_type,
         headers={name: value for name, value in model_response.headers.items() if name.lower() != "content-type"},
     )

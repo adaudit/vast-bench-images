@@ -167,8 +167,8 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                 LOGGER.info("parakeet_http status=400 category=%s", type(error).__name__)
                 self._send(400, {"error": "invalid request"})
             except Exception as error:
-                LOGGER.info("parakeet_http status=500 category=%s", type(error).__name__)
-                self._send(500, {"error": "internal error"})
+                LOGGER.exception("parakeet_http status=500 category=%s", type(error).__name__)
+                self._send(500, {"error": "internal error", "type": type(error).__name__, "message": str(error)})
 
         def log_message(self, *_):
             pass

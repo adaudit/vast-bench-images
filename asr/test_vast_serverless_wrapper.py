@@ -36,13 +36,14 @@ class VastServerlessWrapperTest(unittest.TestCase):
         artifact = ROOT / "asr" / "fixtures" / "audio" / "2086-149220-0033.wav"
         return directory, {"VAST_BENCHMARK_ARTIFACT": str(artifact)}
 
-    def _validated_response(self, generator, payload, body):
+    def _validated_response(self, generator, payload, body, status=200):
         class Response:
             def __init__(self, **kwargs): self.kwargs = kwargs
         class Request:
             async def json(self): return payload
         class ModelResponse:
-            status, content_type, headers = 200, "application/json", {"Content-Type": "application/json"}
+            def __init__(self):
+                self.status, self.content_type, self.headers = status, "application/json", {"Content-Type": "application/json"}
             async def read(self): return body
         fake = ModuleType("aiohttp"); fake.web = type("Web", (), {"Response": Response})
         previous = sys.modules.get("aiohttp"); sys.modules["aiohttp"] = fake
@@ -116,6 +117,32 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertEqual(set(request), {"request_version", "lane", "model_id", "model_revision", "audio_filename", "audio_duration_seconds", "audio_base64"})
         self.assertTrue(base64.b64decode(request["audio_base64"]).startswith(b"RIFF"))
         self.assertEqual(handler["workload_calculator"](payload), 1.0)
+
+    def test_isolated_benchmark_payload_has_no_ambient_os_dependency(self):
+        probe = '''
+import json, runpy, sys, types
+fake = types.ModuleType("vastai")
+fake.BenchmarkConfig = lambda **kwargs: kwargs
+fake.HandlerConfig = lambda **kwargs: kwargs
+fake.LogActionConfig = lambda **kwargs: kwargs
+fake.WorkerConfig = lambda **kwargs: kwargs
+fake.Worker = lambda _: type("Worker", (), {"run": lambda self: None})()
+sys.modules["vastai"] = fake
+payload = runpy.run_path(sys.argv[1], run_name="not_main")["benchmark_payload"]()
+print(json.dumps({"requests": len(payload["requests"])}))
+'''
+        directory, additions = self._benchmark_env()
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", probe, str(WORKER)],
+                env={**os.environ, **additions},
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            directory.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"requests": 1})
 
     def test_isolated_worker_imports_copied_validator_and_validates_responses(self):
         copied = ("production_vast_batch.py", "drain_worker.py", "vast_adapter.py", "offline_entrypoint.py", "vast_failure_guard.py")
@@ -237,6 +264,13 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         with self.assertRaises(ValueError):
             self._validated_response(namespace["validated_response"], payload, b'[]')
 
+    def test_proxy_logs_non_200_benchmark_outcome(self):
+        namespace = self._load_worker("benchmark_proxy_logging")
+        with self.assertLogs("parakeet.pyworker", "ERROR") as logs:
+            response = self._validated_response(namespace["validated_response"], {"requests": []}, b"upstream rejected", status=502)
+        self.assertEqual(response.kwargs["status"], 502)
+        self.assertIn("method=POST route=/transcribe-batch status=502 body=upstream rejected", "\n".join(logs.output))
+
     def test_approved_benchmark_reaches_public_http_contract(self):
         directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
         try:
@@ -297,6 +331,29 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
             self.assertEqual(len(loads), 3)
         finally:
             release.set(); http.shutdown(); thread.join(); http.server_close()
+
+    def test_http_500_exposes_exception_and_logs_traceback(self):
+        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
+        try:
+            payload = self._load_worker("server_error_benchmark")["benchmark_payload"]()
+        finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
+        runtime = server.Runtime(
+            model_verifier=lambda _: None,
+            model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: []})(),
+            batch_transcriber=lambda _: (_ for _ in ()).throw(RuntimeError("transcription broke")),
+        )
+        runtime.initialize_once()
+        http = server.make_server(("127.0.0.1", 0), runtime)
+        thread = threading.Thread(target=http.serve_forever); thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+            with self.assertLogs("parakeet.server", "ERROR") as logs:
+                status, body = self._http(request)
+        finally:
+            http.shutdown(); thread.join(); http.server_close()
+        self.assertEqual((status, body), (500, {"error": "internal error", "type": "RuntimeError", "message": "transcription broke"}))
+        self.assertIn("RuntimeError: transcription broke", "\n".join(logs.output))
 
     def test_http_terminal_failure_is_stable_and_exposes_error(self):
         loads = []
