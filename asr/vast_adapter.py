@@ -1,5 +1,8 @@
 """Small, dependency-free adapter between Vast PyWorker and the v3 ASR core."""
 import base64
+import io
+import struct
+import wave
 from dataclasses import dataclass
 
 try:
@@ -39,7 +42,7 @@ def chunk_ranges(duration, *, silence_points=()):
         nearby = [point for point in silence_points if start < point < duration and abs(point - target) <= CHUNK_SECONDS / 2]
         boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else target
         chunks.append((start, min(duration, boundary + OVERLAP_SECONDS)))
-        start = max(start + 0.001, boundary - OVERLAP_SECONDS)
+        start = boundary
     return tuple(chunks)
 
 
@@ -62,6 +65,28 @@ def parse_request(payload):
     if not 0 < len(audio) <= MAX_AUDIO_BYTES or not audio.startswith(b"RIFF"):
         raise ContractError("audio must be a bounded WAV payload")
     return Request(audio, filename, float(duration), chunk_ranges(float(duration)))
+
+def slice_wav(audio_bytes, start, end):
+    """Return a frame-aligned 16 kHz mono s16le WAV interval."""
+    if not 0 <= start <= end:
+        raise ContractError("WAV slice bounds are invalid")
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype()) != (1, struct.calcsize("<h"), 16000, "NONE"):
+                raise ContractError("audio must be 16 kHz mono s16le WAV")
+            frame_count = source.getnframes()
+            first_frame = min(frame_count, round(start * source.getframerate()))
+            last_frame = min(frame_count, round(end * source.getframerate()))
+            source.setpos(first_frame)
+            frames = source.readframes(max(0, last_frame - first_frame))
+            params = source.getparams()
+    except wave.Error as error:
+        raise ContractError("audio must be a valid WAV payload") from error
+    output = io.BytesIO()
+    with wave.open(output, "wb") as destination:
+        destination.setparams(params)
+        destination.writeframes(frames)
+    return output.getvalue()
 
 
 def batch_and_restitch(batch_segments, chunks):

@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           cp overlay/asr/vast-serverless.Dockerfile source/asr/vast-serverless.Dockerfile
           cp overlay/asr/server.py source/asr/server.py
+          cp overlay/asr/vast_adapter.py source/asr/vast_adapter.py
           cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py
           cp overlay/asr/vast-pyworker.py source/asr/vast-pyworker.py
           cp overlay/asr/vast-entrypoint.sh source/asr/vast-entrypoint.sh
@@ -295,11 +296,14 @@ jobs:
           docker cp "$container:/workspace/vast-pyworker/." "$worker_dir"
           PYWORKER_DIR="$worker_dir" VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
           import asyncio
+          import base64
+          import io
           import os
           import json
           import runpy
           import sys
           import types
+          import wave
           from urllib.error import HTTPError
           from urllib.request import Request, urlopen
 
@@ -347,6 +351,38 @@ jobs:
           print(f"validated_response status={validated_status}")
           if validated_status != 200:
               raise SystemExit(f"validated_response returned HTTP {validated_status}")
+          with wave.open(os.environ["VAST_BENCHMARK_ARTIFACT"], "rb") as fixture:
+              if (fixture.getnchannels(), fixture.getsampwidth(), fixture.getframerate(), fixture.getcomptype()) != (1, 2, 16000, "NONE"):
+                  raise SystemExit("fixture must be 16 kHz mono s16le WAV")
+              frame_data = fixture.readframes(fixture.getnframes())
+              frame_rate = fixture.getframerate()
+              params = fixture.getparams()
+          long_audio = io.BytesIO()
+          with wave.open(long_audio, "wb") as generated:
+              generated.setparams(params)
+              generated.writeframes(frame_data * 40)
+          long_duration = len(frame_data) * 40 / (frame_rate * 2)
+          long_payload = {"requests": [{
+              **payload["requests"][0],
+              "audio_filename": "long-benchmark.wav",
+              "audio_duration_seconds": long_duration,
+              "audio_base64": base64.b64encode(long_audio.getvalue()).decode(),
+          }]}
+          request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(long_payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+          try:
+              with urlopen(request, timeout=1500) as response:
+                  long_status, long_body = response.status, response.read()
+          except HTTPError as error:
+              long_status, long_body = error.code, error.read()
+          print(f"long_benchmark status={long_status}")
+          if long_status != 200:
+              raise SystemExit(f"long real-model benchmark returned HTTP {long_status}: {long_body[:2000].decode('utf-8', 'replace')}")
+          long_segments = json.loads(long_body)[0]["segments"]
+          starts = [segment["start_seconds"] for segment in long_segments]
+          ends = [segment["end_seconds"] for segment in long_segments]
+          print(f"long_benchmark segments={len(long_segments)} max_end_seconds={max(ends, default=0):.3f}")
+          if not long_segments or max(ends) <= 200 or starts != sorted(starts) or ends != sorted(ends):
+              raise SystemExit("long real-model benchmark did not return monotonic absolute segments beyond 200 seconds")
           PY
       - name: Prove offline imports
         if: inputs.proof_only

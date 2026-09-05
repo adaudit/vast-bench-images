@@ -6,19 +6,32 @@ import os
 import tempfile
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
+
+try:
     from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
-    from vast_adapter import ContractError, parse_request
+    from vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
     from parakeet_pool import ParakeetPool
 except ModuleNotFoundError:
     from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
-    from asr.vast_adapter import ContractError, parse_request
+    from asr.vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
     from asr.parakeet_pool import ParakeetPool
 
 
 LOGGER = logging.getLogger("parakeet.server")
+CHUNK_BATCH = max(1, int(os.environ.get("PARAKEET_CHUNK_BATCH", "8")))
+
+
+def _cuda_available():
+    return torch is not None and torch.cuda.is_available()
+
+
 
 def configure_logging():
     logging.basicConfig(
@@ -59,7 +72,8 @@ class Runtime:
         try:
             self.model_verifier(MODEL_PATH)
             pool = ParakeetPool(self.instance_count, self.model_loader)
-            if len(pool.instances) != self.instance_count or len({id(model) for model in pool.instances}) != self.instance_count or any(model is None or not callable(getattr(model, "transcribe", None)) for model in pool.instances):
+            models = [getattr(lane, "model", None) for lane in pool.instances]
+            if len(pool.instances) != self.instance_count or len({id(model) for model in models}) != self.instance_count or any(not callable(getattr(model, "transcribe", None)) for model in models):
                 raise ValueError("model lanes are unusable")
         except Exception as exc:
             LOGGER.exception("parakeet initialization failed")
@@ -69,8 +83,14 @@ class Runtime:
             return
         with self._state_lock:
             self.pool = pool
-            self.model = pool.instances[0]
+            self.model = models[0]
             self.state = "ready"
+        LOGGER.info(
+            "parakeet_runtime device=%s dtype_policy=%s lane_count=%d",
+            "cuda" if _cuda_available() else "cpu",
+            "bf16-autocast" if _cuda_available() else "fp32-cpu",
+            self.instance_count,
+        )
 
     def start_initialization(self):
         threading.Thread(target=self.initialize_once, daemon=True).start()
@@ -97,32 +117,74 @@ class Runtime:
         return model
 
     def _transcribe_many(self, requests):
-        files = []
+        files, chunk_request_indexes = [], []
+        request_batches = [0] * len(requests)
+        started = time.monotonic()
         try:
-            for request in requests:
-                audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                audio.write(request.audio); audio.close(); files.append(audio.name)
-            model = self.pool.checkout()
+            for request_index, request in enumerate(requests):
+                for start, end in request.chunks:
+                    audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                    files.append(audio.name)
+                    try:
+                        audio.write(slice_wav(request.audio, start, end))
+                    finally:
+                        audio.close()
+                    chunk_request_indexes.append(request_index)
+            lane = self.pool.checkout()
             try:
-                LOGGER.info("parakeet_inference stage=start")
-                hypotheses = model.transcribe(files, batch_size=len(files), timestamps=True)
-                for hypothesis in hypotheses:
-                    timestamp = getattr(hypothesis, "timestamp", None)
-                    words = timestamp.get("word") if isinstance(timestamp, dict) else None
+                chunk_segments = [[] for _ in requests]
+                offset = 0
+                while offset < len(files):
+                    size, retried = min(CHUNK_BATCH, len(files) - offset), False
+                    while True:
+                        paths = files[offset:offset + size]
+                        for request_index in set(chunk_request_indexes[offset:offset + size]):
+                            request_batches[request_index] += 1
+                        try:
+                            if _cuda_available():
+                                with torch.cuda.stream(lane.stream):
+                                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                                        hypotheses = lane.model.transcribe(paths, batch_size=len(paths), timestamps=True)
+                            else:
+                                hypotheses = lane.model.transcribe(paths, batch_size=len(paths), timestamps=True)
+                            break
+                        except Exception as error:
+                            if retried or size == 1 or not _cuda_available() or not isinstance(error, torch.cuda.OutOfMemoryError):
+                                raise
+                            size //= 2
+                            retried = True
+                        finally:
+                            if lane.stream is not None:
+                                lane.stream.synchronize()
+                    if len(hypotheses) != len(paths):
+                        raise ContractError("model result count must equal chunk count")
+                    for hypothesis, request_index in zip(hypotheses, chunk_request_indexes[offset:offset + size]):
+                        timestamp = getattr(hypothesis, "timestamp", None)
+                        words = timestamp.get("word") if isinstance(timestamp, dict) else None
+                        LOGGER.info(
+                            "parakeet_inference result aligned_words=%d word_confidence_present=%s hypothesis_type=%s",
+                            len(words) if isinstance(words, list) else 0,
+                            getattr(hypothesis, "word_confidence", None) is not None,
+                            type(hypothesis).__name__,
+                        )
+                        chunk_segments[request_index].append(extract_aligned_words(hypothesis))
+                    offset += size
+                segments = [batch_and_restitch(chunk_segments[index], request.chunks) for index, request in enumerate(requests)]
+                elapsed = time.monotonic() - started
+                for request_index, request in enumerate(requests):
                     LOGGER.info(
-                        "parakeet_inference result aligned_words=%d word_confidence_present=%s hypothesis_type=%s",
-                        len(words) if isinstance(words, list) else 0,
-                        getattr(hypothesis, "word_confidence", None) is not None,
-                        type(hypothesis).__name__,
+                        "parakeet_chunked_inference filename=%s chunk_count=%d sub_batches=%d elapsed_seconds=%.3f",
+                        request.audio_filename,
+                        len(request.chunks),
+                        request_batches[request_index],
+                        elapsed,
                     )
-                segments = [extract_aligned_words(hypothesis) for hypothesis in hypotheses]
-                LOGGER.info("parakeet_inference stage=complete")
                 return segments
             finally:
-                self.pool.checkin(model)
+                self.pool.checkin(lane)
         finally:
             for path in files:
-                try: __import__("os").unlink(path)
+                try: os.unlink(path)
                 except FileNotFoundError: pass
 
     def transcribe(self, payload):
