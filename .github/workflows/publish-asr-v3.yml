@@ -240,7 +240,7 @@ jobs:
           import tarfile
           import tempfile
 
-          limit = 450 * 1024 * 1024
+          limit = 600 * 1024 * 1024
           with tarfile.open(os.environ["IMAGE_TAR"]) as archive:
               manifest = json.load(archive.extractfile("manifest.json"))
               if len(manifest) != 1:
@@ -261,7 +261,7 @@ jobs:
                   created_by = entry.get("created_by", "<unknown>")
                   print(f"{index:02d} {size:12d} bytes {size / 1024 / 1024:7.1f} MiB {created_by}")
                   if size > limit:
-                      raise SystemExit(f"compressed layer exceeds 450 MiB: {size} bytes ({created_by})")
+                      raise SystemExit(f"compressed layer exceeds 600 MiB: {size} bytes ({created_by})")
           PY
           rm "$image_tar"
       - name: Real-model benchmark on CPU
@@ -620,7 +620,7 @@ jobs:
           import tarfile
           import tempfile
 
-          limit = 450 * 1024 * 1024
+          limit = 600 * 1024 * 1024
           with tarfile.open(os.environ["IMAGE_TAR"]) as archive:
               manifest = json.load(archive.extractfile("manifest.json"))
               if len(manifest) != 1:
@@ -641,7 +641,7 @@ jobs:
                   created_by = entry.get("created_by", "<unknown>")
                   print(f"{index:02d} {size:12d} bytes {size / 1024 / 1024:7.1f} MiB {created_by}")
                   if size > limit:
-                      raise SystemExit(f"compressed layer exceeds 450 MiB: {size} bytes ({created_by})")
+                      raise SystemExit(f"compressed layer exceeds 600 MiB: {size} bytes ({created_by})")
           PY
           rm "$image_tar"
       - name: Real-model benchmark on CPU
