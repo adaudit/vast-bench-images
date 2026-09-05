@@ -19,6 +19,7 @@ on:
         options:
           - asr
           - diar
+          - bootstrap-wheel
 
 concurrency:
   group: publish-asr-v3-${{ github.sha }}
@@ -33,7 +34,7 @@ permissions:
 
 jobs:
   publish-asr-v3:
-    if: inputs.authorize_known_vulnerable_canary && inputs.target != 'diar' && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
+    if: inputs.authorize_known_vulnerable_canary && inputs.target == 'asr' && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out immutable overlay
@@ -688,3 +689,33 @@ jobs:
           fi
           resolved="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -er '.digest')" || exit 1
           test "$resolved" = "$DIGEST"
+  bootstrap-wheel:
+    if: inputs.target == 'bootstrap-wheel' && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE: ctc_segmentation
+      VERSION: 1.7.4
+      SDIST_SHA256: 19d383ea5f22438ebb1699d72b22078b63f351a33fa50bedb19c14077ba6a116
+      BUILD_REQUIRES: cython==3.3.0 numpy==1.26.4 setuptools==80.9.0 wheel==0.45.1
+    steps:
+      - name: Build audited wheel from hash-pinned sdist inside the pinned lean base
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --platform linux/amd64 -v "$PWD/out:/out" \
+            -e PACKAGE -e VERSION -e SDIST_SHA256 -e BUILD_REQUIRES \
+            python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c sh -euc '
+              apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends build-essential >/dev/null
+              pip install -q --no-cache-dir $BUILD_REQUIRES
+              pip download -q --no-deps --no-binary :all: "$PACKAGE==$VERSION" -d /tmp/sd
+              sdist=$(ls /tmp/sd/*.tar.gz)
+              printf "%s  %s\n" "$SDIST_SHA256" "$sdist" | sha256sum -c -
+              pip wheel -q --no-deps --no-build-isolation "$sdist" -w /out
+              cp "$sdist" /out/
+              cd /out && sha256sum *.whl *.tar.gz | tee SHA256SUMS
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-wheel-ctc_segmentation-1.7.4
+          path: out/
+          retention-days: 3
