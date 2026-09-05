@@ -5,6 +5,10 @@ log=/workspace/parakeet-server.log
 startup_timeout=${STARTUP_TIMEOUT_SECONDS:-300}; startup_timeout=${startup_timeout#\"}; startup_timeout=${startup_timeout%\"}
 deadline=$(( $(date +%s) + startup_timeout ))
 report_addr="${REPORT_ADDR:-https://run.vast.ai}"
+model=/workspace/models/parakeet-tdt-0.6b-v3.nemo
+parts=/workspace/models/parts
+cat "$parts"/parakeet-tdt-0.6b-v3.nemo.part.* > "$model.tmp"
+mv "$model.tmp" "$model"
 
 report_error_and_exit() {
   ERROR_MESSAGE=$1 REPORT_ADDR=$report_addr python3 -c '

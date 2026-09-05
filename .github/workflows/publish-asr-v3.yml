@@ -171,6 +171,8 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
+          split -b 200M -d -a 2 "$model" "$model.part."
+          rm "$model"
       - name: Materialize hash-verified wheelhouse
         working-directory: source
         run: |
@@ -222,6 +224,45 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
+      - name: Verify compressed image layers
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image_tar="$RUNNER_TEMP/parakeet-v3-layers.tar"
+          docker save "$CPU_BENCHMARK_IMAGE" -o "$image_tar"
+          IMAGE_TAR="$image_tar" python3 - <<'PY'
+          import gzip
+          import json
+          import os
+          import tarfile
+          import tempfile
+
+          limit = 450 * 1024 * 1024
+          with tarfile.open(os.environ["IMAGE_TAR"]) as archive:
+              manifest = json.load(archive.extractfile("manifest.json"))
+              if len(manifest) != 1:
+                  raise SystemExit("docker save must contain exactly one image")
+              image = manifest[0]
+              config = json.load(archive.extractfile(image["Config"]))
+              layers = image["Layers"]
+              history = [entry for entry in config["history"] if not entry.get("empty_layer")]
+              if len(layers) != len(history):
+                  raise SystemExit("image layer history does not align with docker save layers")
+              for index, (layer, entry) in enumerate(zip(layers, history), 1):
+                  with tempfile.TemporaryFile() as compressed:
+                      with gzip.GzipFile(fileobj=compressed, mode="wb", compresslevel=6, mtime=0) as output:
+                          source = archive.extractfile(layer)
+                          for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                              output.write(chunk)
+                      size = compressed.tell()
+                  created_by = entry.get("created_by", "<unknown>")
+                  print(f"{index:02d} {size:12d} bytes {size / 1024 / 1024:7.1f} MiB {created_by}")
+                  if size > limit:
+                      raise SystemExit(f"compressed layer exceeds 450 MiB: {size} bytes ({created_by})")
+          PY
+          rm "$image_tar"
       - name: Real-model benchmark on CPU
         working-directory: source
         env:
@@ -229,7 +270,7 @@ jobs:
         run: |
           set -euo pipefail
           worker_dir="$(mktemp -d)"
-          container="$(docker run --detach --rm --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --entrypoint python3 "$CPU_BENCHMARK_IMAGE" /workspace/server.py)"
+          container="$(docker run --detach --rm --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
@@ -498,6 +539,8 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
+          split -b 200M -d -a 2 "$model" "$model.part."
+          rm "$model"
       - name: Materialize hash-verified wheelhouse
         working-directory: source
         run: |
@@ -560,6 +603,45 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f diar.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
+      - name: Verify compressed image layers
+        working-directory: source
+        env:
+          CPU_BENCHMARK_IMAGE: local/diar-v1-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image_tar="$RUNNER_TEMP/diar-v1-layers.tar"
+          docker save "$CPU_BENCHMARK_IMAGE" -o "$image_tar"
+          IMAGE_TAR="$image_tar" python3 - <<'PY'
+          import gzip
+          import json
+          import os
+          import tarfile
+          import tempfile
+
+          limit = 450 * 1024 * 1024
+          with tarfile.open(os.environ["IMAGE_TAR"]) as archive:
+              manifest = json.load(archive.extractfile("manifest.json"))
+              if len(manifest) != 1:
+                  raise SystemExit("docker save must contain exactly one image")
+              image = manifest[0]
+              config = json.load(archive.extractfile(image["Config"]))
+              layers = image["Layers"]
+              history = [entry for entry in config["history"] if not entry.get("empty_layer")]
+              if len(layers) != len(history):
+                  raise SystemExit("image layer history does not align with docker save layers")
+              for index, (layer, entry) in enumerate(zip(layers, history), 1):
+                  with tempfile.TemporaryFile() as compressed:
+                      with gzip.GzipFile(fileobj=compressed, mode="wb", compresslevel=6, mtime=0) as output:
+                          source = archive.extractfile(layer)
+                          for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                              output.write(chunk)
+                      size = compressed.tell()
+                  created_by = entry.get("created_by", "<unknown>")
+                  print(f"{index:02d} {size:12d} bytes {size / 1024 / 1024:7.1f} MiB {created_by}")
+                  if size > limit:
+                      raise SystemExit(f"compressed layer exceeds 450 MiB: {size} bytes ({created_by})")
+          PY
+          rm "$image_tar"
       - name: Real-model benchmark on CPU
         working-directory: source
         env:
@@ -567,7 +649,7 @@ jobs:
         run: |
           set -euo pipefail
           worker_dir="$(mktemp -d)"
-          container="$(docker run --detach --rm --name diar-real-model-benchmark --publish 8080:8080 --entrypoint python3 "$CPU_BENCHMARK_IMAGE" /workspace/server.py)"
+          container="$(docker run --detach --rm --name diar-real-model-benchmark --publish 8080:8080 --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
