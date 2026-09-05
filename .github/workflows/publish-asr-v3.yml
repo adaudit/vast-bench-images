@@ -588,7 +588,7 @@ jobs:
             sleep 5
           done
           docker cp "$container:/workspace/vast-pyworker/." "$worker_dir"
-          PYWORKER_DIR="$worker_dir" python3 - <<'PY'
+          PYWORKER_DIR="$worker_dir" VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
           import base64
           import json
           import os
