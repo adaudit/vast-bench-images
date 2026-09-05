@@ -720,7 +720,7 @@ jobs:
           deadline=$((SECONDS + 900))
           while :; do
             logs="$(docker logs "$container" 2>&1 || true)"
-            if printf '%s\n' "$logs" | grep -Fq 'Got log line indicating model is loaded' || printf '%s\n' "$logs" | grep -Fq 'Running benchmark'; then
+            if grep -Fq -e 'Got log line indicating model is loaded' -e 'Running benchmark' <<<"$logs"; then
               break
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != true ]; then echo "entrypoint exited early (code $(docker inspect -f '{{.State.ExitCode}}' "$container"))" >&2; docker logs "$container" >&2 || true; exit 1; fi
