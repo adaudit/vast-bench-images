@@ -381,6 +381,8 @@ jobs:
           cp overlay/diar/server.py overlay/diar/vast-pyworker.py overlay/diar/vast-entrypoint.sh overlay/diar/bake_models.py source/diar/
           cp overlay/locks/diar-v1.requirements.txt source/locks/diar-v1.requirements.txt
           cp overlay/locks/diar-v1.artifacts.json source/locks/diar-v1.artifacts.json
+          cp overlay/vendor/wheelhouses/parakeet-v3/ctc_segmentation-1.7.4-cp311-cp311-linux_x86_64.whl source/vendor/wheelhouses/parakeet-v3/
+          printf '%s  %s\n' e105ffc70ef98a15f7d8f30477135235681b8a6d8a2b156aae53efd2de3631f3 source/vendor/wheelhouses/parakeet-v3/ctc_segmentation-1.7.4-cp311-cp311-linux_x86_64.whl | sha256sum -c -
           test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
