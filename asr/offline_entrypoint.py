@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Offline-only Parakeet-v3 candidate producer."""
 import argparse
+import functools
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
+
+LOGGER = logging.getLogger("parakeet.offline")
 
 SCHEMA_VERSION = "asr-candidate-v3"
 REQUEST_VERSION = "parakeet-v3-offline-request-v1"
@@ -185,6 +189,74 @@ def extract_aligned_words(result):
     return segments
 
 
+_GUARD_ATTRIBUTE = "_leading_punctuation_guard"
+
+
+def _droppable_leading_entries(char_offsets, supported_punctuation):
+    """Count leading offset entries whose decoded tokens are all whitespace or supported punctuation.
+
+    ``char_offsets`` and ``encoded_char_offsets`` are index-aligned: NeMo deepcopies the
+    one from the other (rnnt_decoding.py:927) after building both from the same token
+    zip (rnnt_decoding.py:1037-1044), so a single count trims both lists.
+    """
+    dropped = 0
+    for entry in char_offsets:
+        tokens = entry.get("char") if isinstance(entry, dict) else None
+        if not isinstance(tokens, (list, tuple)):
+            break
+        if not all(
+            token.strip() == "" or (supported_punctuation and token.strip() in supported_punctuation)
+            for token in tokens
+        ):
+            break
+        dropped += 1
+    return dropped
+
+
+def guard_leading_punctuation(decoding):
+    """Wrap ``decoding.get_words_offsets`` against the NeMo 2.4.1 leading-punctuation bug.
+
+    ``RNNTBPEDecoding.get_words_offsets`` reads ``word_offsets[-1]`` before any word
+    exists when a chunk's first decoded token is supported punctuation
+    (rnnt_decoding.py:1966-1971), turning real 60 s chunks into IndexErrors. The wrapper
+    retries once without the leading whitespace/punctuation entries; offsets are
+    absolute decoder timesteps, so the trimmed retry keeps correct timings. It must be
+    applied after ``change_decoding_strategy`` because that call rebuilds
+    ``model.decoding``.
+    """
+    original = decoding.get_words_offsets
+    if getattr(original, _GUARD_ATTRIBUTE, False):
+        return
+
+    @functools.wraps(original)
+    def guarded(char_offsets, encoded_char_offsets, word_delimiter_char=" ", supported_punctuation=None):
+        try:
+            return original(
+                char_offsets=char_offsets,
+                encoded_char_offsets=encoded_char_offsets,
+                word_delimiter_char=word_delimiter_char,
+                supported_punctuation=supported_punctuation,
+            )
+        except IndexError:
+            dropped = _droppable_leading_entries(char_offsets, supported_punctuation)
+            if not dropped:
+                raise
+            LOGGER.warning("get_words_offsets: dropping %d leading punctuation-only offset entries before retry", dropped)
+            trimmed_char_offsets = char_offsets[dropped:]
+            trimmed_encoded_char_offsets = encoded_char_offsets[dropped:]
+            if not trimmed_char_offsets or not trimmed_encoded_char_offsets:
+                return []
+            return original(
+                char_offsets=trimmed_char_offsets,
+                encoded_char_offsets=trimmed_encoded_char_offsets,
+                word_delimiter_char=word_delimiter_char,
+                supported_punctuation=supported_punctuation,
+            )
+
+    setattr(guarded, _GUARD_ATTRIBUTE, True)
+    decoding.get_words_offsets = guarded
+
+
 def decode_with_nemo(model_path, audio_path):
     from nemo.collections.asr.models import ASRModel
     from omegaconf import open_dict
@@ -199,6 +271,7 @@ def decode_with_nemo(model_path, audio_path):
         # NeMo's CUDA-graph TDT decoder captures a stream per lane and crashes when lanes decode concurrently.
         model.cfg.decoding.greedy.use_cuda_graph_decoder = False
     model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+    guard_leading_punctuation(model.decoding)
     return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
 
 

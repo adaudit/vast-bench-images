@@ -17,6 +17,30 @@ spec = importlib.util.spec_from_file_location("offline_entrypoint", ENTRYPOINT)
 offline = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(offline)
 
+class BuggyWordOffsetsDecoding:
+    """Miniature of NeMo 2.4.1 ``RNNTBPEDecoding.get_words_offsets``: supported
+    punctuation decoded before any word exists reads ``word_offsets[-1]`` on an empty
+    list (rnnt_decoding.py:1966-1971) and raises IndexError."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get_words_offsets(self, char_offsets, encoded_char_offsets, word_delimiter_char=" ", supported_punctuation=None):
+        self.calls.append((char_offsets, encoded_char_offsets, word_delimiter_char, supported_punctuation))
+        words, started = [], False
+        for entry in char_offsets:
+            for token in entry["char"]:
+                text = token.strip()
+                if supported_punctuation and text in supported_punctuation:
+                    if not started:
+                        raise IndexError("word_offsets index out of range")
+                    words[-1] = dict(words[-1], end_offset=entry["end_offset"])
+                elif text:
+                    started = True
+                    words.append({"word": text, "start_offset": entry["start_offset"], "end_offset": entry["end_offset"]})
+        return words
+
+
 
 class OfflineV3ContractTest(unittest.TestCase):
     def test_generated_ghcr_guard_behavior_matrix(self):
@@ -303,9 +327,13 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
                 self.cfg = AttrDict({"decoding": decoding})
                 self.strategies = []
                 self.transcribed = None
+                self.decoding = BuggyWordOffsetsDecoding()
 
             def change_decoding_strategy(self, decoding_cfg, *, verbose):
                 self.strategies.append((decoding_cfg, verbose))
+                self.superseded_decoding = self.decoding  # NeMo rebuilds model.decoding here
+                self.decoding = BuggyWordOffsetsDecoding()
+
 
             def transcribe(self, paths, *, timestamps):
                 self.transcribed = (paths, timestamps)
@@ -355,6 +383,105 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
             self.assertIs(model.cfg.decoding.preserve_alignments, True)
             self.assertEqual(model.cfg.decoding.confidence_cfg, {"preserve_token_confidence": True, "preserve_word_confidence": False})
             self.assertEqual(model.strategies, [(model.cfg.decoding, False)])
+            # the guard must land on the decoding instance rebuilt by change_decoding_strategy
+            self.assertTrue(getattr(model.decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
+            self.assertEqual(model.decoding.get_words_offsets.__name__, "get_words_offsets")
+            self.assertFalse(getattr(model.superseded_decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
+    def test_guard_strips_leading_punctuation_entries_and_retries_once(self):
+        decoding = BuggyWordOffsetsDecoding()
+        offline.guard_leading_punctuation(decoding)
+        char_offsets = [
+            {"char": [","], "start_offset": 0, "end_offset": 1},
+            {"char": [" "], "start_offset": 1, "end_offset": 2},
+            {"char": ["hello"], "start_offset": 2, "end_offset": 3},
+            {"char": ["."], "start_offset": 3, "end_offset": 4},
+        ]
+        encoded_char_offsets = [
+            {"char": [11], "start_offset": 0, "end_offset": 1},
+            {"char": [3], "start_offset": 1, "end_offset": 2},
+            {"char": [431], "start_offset": 2, "end_offset": 3},
+            {"char": [12], "start_offset": 3, "end_offset": 4},
+        ]
+        with self.assertLogs("parakeet.offline", "WARNING") as logs:
+            words = decoding.get_words_offsets(
+                char_offsets=char_offsets,
+                encoded_char_offsets=encoded_char_offsets,
+                word_delimiter_char=" ",
+                supported_punctuation={",", "."},
+            )
+        self.assertEqual(words, [{"word": "hello", "start_offset": 2, "end_offset": 4}])
+        self.assertEqual(len(decoding.calls), 2)
+        retried_char_offsets, retried_encoded_char_offsets, delimiter, punctuation = decoding.calls[1]
+        self.assertEqual(retried_char_offsets, char_offsets[2:])
+        self.assertEqual(retried_encoded_char_offsets, encoded_char_offsets[2:])
+        self.assertEqual((delimiter, punctuation), (" ", {",", "."}))
+        self.assertEqual(len(char_offsets), 4)  # trimmed by slice; the caller's lists are never mutated
+        self.assertEqual(len(logs.output), 1)
+        self.assertRegex(logs.output[0], r"dropping 2 leading punctuation-only offset entries")
+    def test_guard_passes_word_first_input_through_untouched(self):
+        decoding = BuggyWordOffsetsDecoding()
+        offline.guard_leading_punctuation(decoding)
+        char_offsets = [
+            {"char": ["hello"], "start_offset": 0, "end_offset": 1},
+            {"char": [","], "start_offset": 1, "end_offset": 2},
+        ]
+        encoded_char_offsets = [
+            {"char": [431], "start_offset": 0, "end_offset": 1},
+            {"char": [11], "start_offset": 1, "end_offset": 2},
+        ]
+        words = decoding.get_words_offsets(
+            char_offsets=char_offsets,
+            encoded_char_offsets=encoded_char_offsets,
+            word_delimiter_char=" ",
+            supported_punctuation={","},
+        )
+        self.assertEqual(words, [{"word": "hello", "start_offset": 0, "end_offset": 2}])
+        self.assertEqual(len(decoding.calls), 1)
+        self.assertIs(decoding.calls[0][0], char_offsets)
+        self.assertIs(decoding.calls[0][1], encoded_char_offsets)
+    def test_guard_returns_empty_when_every_entry_is_droppable(self):
+        decoding = BuggyWordOffsetsDecoding()
+        offline.guard_leading_punctuation(decoding)
+        with self.assertLogs("parakeet.offline", "WARNING") as logs:
+            words = decoding.get_words_offsets(
+                char_offsets=[{"char": [",", "."], "start_offset": 0, "end_offset": 1}, {"char": ["!"], "start_offset": 1, "end_offset": 2}],
+                encoded_char_offsets=[{"char": [11, 12], "start_offset": 0, "end_offset": 1}, {"char": [13], "start_offset": 1, "end_offset": 2}],
+                word_delimiter_char=" ",
+                supported_punctuation={",", ".", "!"},
+            )
+        self.assertEqual(words, [])
+        self.assertEqual(len(decoding.calls), 1)
+        self.assertRegex(logs.output[0], r"dropping 2 leading punctuation-only offset entries")
+    def test_guard_is_idempotent_and_preserves_the_original_callable(self):
+        decoding = BuggyWordOffsetsDecoding()
+        offline.guard_leading_punctuation(decoding)
+        guarded = decoding.get_words_offsets
+        offline.guard_leading_punctuation(decoding)
+        self.assertIs(decoding.get_words_offsets, guarded)
+        self.assertIs(guarded.__name__, "get_words_offsets")
+        self.assertTrue(getattr(guarded, offline._GUARD_ATTRIBUTE))
+        self.assertIs(guarded.__wrapped__.__func__, BuggyWordOffsetsDecoding.get_words_offsets)
+        self.assertIs(guarded.__wrapped__.__self__, decoding)
+    def test_guard_propagates_failures_it_cannot_recover_from(self):
+        class Failing(BuggyWordOffsetsDecoding):
+            def __init__(self, error):
+                self.error = error
+
+            def get_words_offsets(self, *args, **kwargs):
+                raise self.error
+
+        word_first = [{"char": ["hello"], "start_offset": 0, "end_offset": 1}]
+        for error in (ValueError("unrelated"), IndexError("not from leading punctuation")):
+            with self.subTest(error=error):
+                decoding = Failing(error)
+                offline.guard_leading_punctuation(decoding)
+                with self.assertRaises(type(error)):
+                    decoding.get_words_offsets(
+                        char_offsets=word_first,
+                        encoded_char_offsets=word_first,
+                        word_delimiter_char=" ",
+                        supported_punctuation={","},
+                    )
     def test_request_rejects_url_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "request.json"

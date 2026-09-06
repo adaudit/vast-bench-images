@@ -17,11 +17,11 @@ except ModuleNotFoundError:
     torch = None
 
 try:
-    from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, guard_leading_punctuation, verify_model
     from vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
     from parakeet_pool import ParakeetPool
 except ModuleNotFoundError:
-    from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, guard_leading_punctuation, verify_model
     from asr.vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
     from asr.parakeet_pool import ParakeetPool
 
@@ -169,6 +169,7 @@ class Runtime:
             # NeMo's CUDA-graph TDT decoder captures a stream per lane and crashes when lanes decode concurrently.
             model.cfg.decoding.greedy.use_cuda_graph_decoder = False
         model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+        guard_leading_punctuation(model.decoding)
         return model
 
     def _transcribe_many(self, requests):

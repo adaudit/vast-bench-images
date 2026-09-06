@@ -100,6 +100,8 @@ class VastAdapterTest(unittest.TestCase):
         self.assertEqual((loads, calls, [x["segments"][0]["text"] for x in got]), ([1, 1, 1], [2], ["a.wav", "b.wav"]))
     def test_load_model_disables_cuda_graph_decoder(self):
         server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
+        from asr.offline_entrypoint import _GUARD_ATTRIBUTE as GUARD_MARKER
+
 
         class AttrDict(dict):
             def __getattr__(self, name):
@@ -111,13 +113,21 @@ class VastAdapterTest(unittest.TestCase):
             def __setattr__(self, name, value):
                 self[name] = AttrDict(value) if isinstance(value, dict) and not isinstance(value, AttrDict) else value
 
+        class Decoding:
+            def get_words_offsets(self, char_offsets, encoded_char_offsets, word_delimiter_char=" ", supported_punctuation=None):
+                return []
+
         class Model:
             def __init__(self, decoding):
                 self.cfg = AttrDict({"decoding": decoding})
                 self.strategies = []
+                self.decoding = Decoding()
 
             def change_decoding_strategy(self, decoding_cfg, *, verbose):
                 self.strategies.append((decoding_cfg, verbose))
+                self.superseded_decoding = self.decoding  # NeMo rebuilds model.decoding here
+                self.decoding = Decoding()
+
 
         restored = [Model(AttrDict({"greedy": AttrDict({"max_symbols": 10})})), Model(AttrDict({}))]
 
@@ -161,6 +171,10 @@ class VastAdapterTest(unittest.TestCase):
             self.assertIs(model.cfg.decoding.preserve_alignments, True)
             self.assertEqual(model.cfg.decoding.confidence_cfg, {"preserve_token_confidence": True, "preserve_word_confidence": False})
             self.assertEqual(model.strategies, [(model.cfg.decoding, False)])
+            # the guard must land on the decoding instance rebuilt by change_decoding_strategy
+            self.assertTrue(getattr(model.decoding.get_words_offsets, GUARD_MARKER, False))
+            self.assertEqual(model.decoding.get_words_offsets.__name__, "get_words_offsets")
+            self.assertFalse(getattr(model.superseded_decoding.get_words_offsets, GUARD_MARKER, False))
 
     def test_request_keeps_short_audio_as_one_chunk(self):
         request = adapter.parse_request({
