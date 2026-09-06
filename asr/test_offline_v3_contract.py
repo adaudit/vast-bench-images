@@ -387,6 +387,15 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
             self.assertTrue(getattr(model.decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
             self.assertEqual(model.decoding.get_words_offsets.__name__, "get_words_offsets")
             self.assertFalse(getattr(model.superseded_decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
+        for model in (configured, created):
+            wrapper = model.change_decoding_strategy
+            offline.guard_model_decoding(model)  # already rebound by decode_with_nemo; must not double-wrap
+            self.assertIs(model.change_decoding_strategy, wrapper)
+            model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+            self.assertIs(model.change_decoding_strategy, wrapper)
+            # the rebuilt decoding must be guarded again by the wrapped strategy call
+            self.assertTrue(getattr(model.decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
+            self.assertEqual(model.strategies, [(model.cfg.decoding, False), (model.cfg.decoding, False)])
     def test_guard_strips_leading_punctuation_entries_and_retries_once(self):
         decoding = BuggyWordOffsetsDecoding()
         offline.guard_leading_punctuation(decoding)

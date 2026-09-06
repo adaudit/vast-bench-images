@@ -100,7 +100,7 @@ class VastAdapterTest(unittest.TestCase):
         self.assertEqual((loads, calls, [x["segments"][0]["text"] for x in got]), ([1, 1, 1], [2], ["a.wav", "b.wav"]))
     def test_load_model_disables_cuda_graph_decoder(self):
         server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
-        from asr.offline_entrypoint import _GUARD_ATTRIBUTE as GUARD_MARKER
+        from asr.offline_entrypoint import _GUARD_ATTRIBUTE as GUARD_MARKER, guard_model_decoding
 
 
         class AttrDict(dict):
@@ -175,6 +175,15 @@ class VastAdapterTest(unittest.TestCase):
             self.assertTrue(getattr(model.decoding.get_words_offsets, GUARD_MARKER, False))
             self.assertEqual(model.decoding.get_words_offsets.__name__, "get_words_offsets")
             self.assertFalse(getattr(model.superseded_decoding.get_words_offsets, GUARD_MARKER, False))
+        for model in (configured, created):
+            wrapper = model.change_decoding_strategy
+            guard_model_decoding(model)  # already rebound by _load_model; must not double-wrap
+            self.assertIs(model.change_decoding_strategy, wrapper)
+            model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+            self.assertIs(model.change_decoding_strategy, wrapper)
+            # the rebuilt decoding must be guarded again by the wrapped strategy call
+            self.assertTrue(getattr(model.decoding.get_words_offsets, GUARD_MARKER, False))
+            self.assertEqual(model.strategies, [(model.cfg.decoding, False), (model.cfg.decoding, False)])
 
     def test_request_keeps_short_audio_as_one_chunk(self):
         request = adapter.parse_request({

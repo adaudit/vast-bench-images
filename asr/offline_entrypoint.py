@@ -257,6 +257,32 @@ def guard_leading_punctuation(decoding):
     decoding.get_words_offsets = guarded
 
 
+_REBIND_ATTRIBUTE = "_leading_punctuation_rebind"
+
+
+def guard_model_decoding(model):
+    """Keep the leading-punctuation guard alive across decoding rebuilds.
+
+    ``model.transcribe(..., timestamps=True)`` rebuilds ``model.decoding`` on every
+    call, discarding the guarded ``get_words_offsets`` each time. Guard the current
+    decoding now and wrap the instance's ``change_decoding_strategy`` so every freshly
+    rebuilt decoding is guarded again. Idempotent per model instance.
+    """
+    if getattr(model, _REBIND_ATTRIBUTE, False):
+        return
+    guard_leading_punctuation(model.decoding)
+    original = model.change_decoding_strategy
+
+    @functools.wraps(original)
+    def wrapper(*args, **kwargs):
+        result = original(*args, **kwargs)
+        guard_leading_punctuation(model.decoding)
+        return result
+
+    setattr(model, _REBIND_ATTRIBUTE, True)
+    setattr(model, "change_decoding_strategy", wrapper)
+
+
 def decode_with_nemo(model_path, audio_path):
     from nemo.collections.asr.models import ASRModel
     from omegaconf import open_dict
@@ -271,7 +297,7 @@ def decode_with_nemo(model_path, audio_path):
         # NeMo's CUDA-graph TDT decoder captures a stream per lane and crashes when lanes decode concurrently.
         model.cfg.decoding.greedy.use_cuda_graph_decoder = False
     model.change_decoding_strategy(model.cfg.decoding, verbose=False)
-    guard_leading_punctuation(model.decoding)
+    guard_model_decoding(model)
     return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
 
 
