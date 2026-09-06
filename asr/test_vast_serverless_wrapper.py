@@ -78,7 +78,7 @@ class VastServerlessWrapperTest(unittest.TestCase):
             if previous is None: sys.modules.pop("vastai", None)
             else: sys.modules["vastai"] = previous
 
-    def test_worker_construction_has_one_serial_benchmark(self):
+    def test_worker_construction_allows_parallel_requests(self):
         captured = {}
 
         class BenchmarkConfig:
@@ -86,9 +86,7 @@ class VastServerlessWrapperTest(unittest.TestCase):
 
         class HandlerConfig:
             def __init__(self, **kwargs):
-                if "benchmark_config" not in kwargs:
-                    raise TypeError("benchmark_config is required")
-                captured["handler"] = self
+                captured.setdefault("handlers", []).append(self)
                 self.kwargs = kwargs
 
         class WorkerConfig:
@@ -109,16 +107,18 @@ class VastServerlessWrapperTest(unittest.TestCase):
         directory, additions = self._benchmark_env(); os.environ.update(additions)
         try:
             runpy.run_path(str(WORKER), run_name="__main__")
-            payload = captured["handler"].kwargs["benchmark_config"].kwargs["generator"]()
+            handler = next(handler for handler in captured["handlers"] if handler.kwargs["route"] == "/transcribe-batch")
+            payload = handler.kwargs["benchmark_config"].kwargs["generator"]()
         finally:
             directory.cleanup(); os.environ.clear(); os.environ.update(env)
             if previous is None: sys.modules.pop("vastai", None)
             else: sys.modules["vastai"] = previous
 
-        handler = captured["handler"].kwargs
+        handler = handler.kwargs
         benchmark = handler["benchmark_config"].kwargs
+        stats_handler = next(handler.kwargs for handler in captured["handlers"] if handler.kwargs["route"] == "/stats")
         self.assertTrue(captured["ran"])
-        self.assertFalse(handler["allow_parallel_requests"])
+        self.assertTrue(handler["allow_parallel_requests"])
         self.assertEqual(benchmark["runs"], 1)
         self.assertFalse(benchmark["do_warmup"])
         self.assertTrue(callable(handler["response_generator"]))
@@ -127,6 +127,8 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertEqual(set(request), {"request_version", "lane", "model_id", "model_revision", "audio_filename", "audio_duration_seconds", "audio_base64"})
         self.assertTrue(base64.b64decode(request["audio_base64"]).startswith(b"RIFF"))
         self.assertEqual(handler["workload_calculator"](payload), 1.0)
+        self.assertEqual(stats_handler["workload_calculator"]({}), 1.0)
+        self.assertTrue(stats_handler["allow_parallel_requests"])
 
     def test_isolated_benchmark_payload_has_no_ambient_os_dependency(self):
         probe = '''
@@ -158,9 +160,9 @@ print(json.dumps({"requests": len(payload["requests"])}))
         copied = ("production_vast_batch.py", "drain_worker.py", "vast_adapter.py", "offline_entrypoint.py", "vast_failure_guard.py")
         probe = '''
 import asyncio, json, runpy, sys, types
-captured = {}
+captured = {"handlers": []}
 class HandlerConfig:
-    def __init__(self, **kwargs): captured["handler"] = kwargs
+    def __init__(self, **kwargs): captured["handlers"].append(kwargs)
 class Worker:
     def __init__(self, config): pass
     def run(self): pass
@@ -172,6 +174,7 @@ fake.WorkerConfig = lambda **kwargs: kwargs
 fake.Worker = Worker
 sys.modules["vastai"] = fake
 runpy.run_path(sys.argv[1], run_name="__main__")
+captured["handler"] = next(handler for handler in captured["handlers"] if handler["route"] == "/transcribe-batch")
 request = {"audio_duration_seconds": 7.435}
 complete = [{"schema_version": "asr-candidate-v3", "disposition": "speech", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_duration_seconds": 7.435, "segments": [{"start_seconds": 0, "end_seconds": 1, "text": "fixture", "confidence": .9}], "selected_segment_indexes": [], "calibration": {"corpus_sha256": "0" * 64, "metric": "segment_brier_score", "threshold": .7, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": [{"segment_index": 0, "raw_confidence": .9, "calibrated_confidence": .8, "timestamp_start_seconds": 0, "timestamp_end_seconds": 1}]}}]
 class Request:
@@ -384,7 +387,7 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             release.set(); http.shutdown(); thread.join(); http.server_close()
 
-    def test_http_500_exposes_exception_and_logs_traceback(self):
+    def test_http_500_exposes_exception_reason_and_logs_traceback(self):
         directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
         try:
             payload = self._load_worker("server_error_benchmark")["benchmark_payload"]()
@@ -404,9 +407,46 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
                 status, body = self._http(request)
         finally:
             http.shutdown(); thread.join(); http.server_close()
-        self.assertEqual((status, body), (500, {"error": "internal error", "type": "RuntimeError", "message": "transcription broke"}))
+        self.assertEqual(body["error"], "internal error")
+        self.assertEqual(body["type"], "RuntimeError")
+        self.assertEqual(body["message"], "transcription broke")
+        self.assertIsInstance(body["reason"], str)
+        self.assertLessEqual(len(body["reason"]), 600)
+        self.assertIn("transcribe_batch", body["reason"])
         self.assertIn("RuntimeError: transcription broke", "\n".join(logs.output))
 
+    def test_stats_returns_recent_runtime_timing(self):
+        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
+        try:
+            payload = self._load_worker("stats_benchmark")["benchmark_payload"]()
+        finally:
+            directory.cleanup(); os.environ.clear(); os.environ.update(env)
+
+        class Model:
+            def transcribe(self, paths, **_):
+                return [type("Hypothesis", (), {
+                    "timestamp": {
+                        "word": [{"word": "fixture", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
+                        "char": [{"char": ["fixture"], "start_offset": 0, "end_offset": 1}],
+                    },
+                    "token_confidence": [.9],
+                })() for _ in paths]
+
+        runtime = server.Runtime(model_verifier=lambda _: None, model_loader=Model)
+        runtime.initialize_once()
+        runtime.transcribe_batch(payload["requests"])
+        http = server.make_server(("127.0.0.1", 0), runtime)
+        thread = threading.Thread(target=http.serve_forever); thread.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/stats", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+            status, body = self._http(request)
+        finally:
+            http.shutdown(); thread.join(); http.server_close()
+        self.assertEqual((status, body["lane_count"]), (200, 3))
+        self.assertGreaterEqual(body["max_concurrent_lanes"], 1)
+        recent = body["recent"][-1]
+        self.assertEqual(set(recent), {"lane_index", "chunk_count", "sub_batches", "audio_seconds", "gpu_seconds", "started_monotonic", "finished_monotonic", "max_concurrent_lanes"})
+        self.assertEqual(recent["chunk_count"], 1)
     def test_http_terminal_failure_is_stable_and_exposes_error(self):
         loads = []
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or (_ for _ in ()).throw(RuntimeError("/tmp/private-model")))
@@ -445,7 +485,7 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         joined = "\n".join(logs.output)
         self.assertIn("parakeet_http status=400 category=contract reason=model produced no aligned word evidence", joined)
         self.assertIn("parakeet_batch request_count=1", joined)
-        self.assertIn("parakeet_inference result aligned_words=0 word_confidence_present=False hypothesis_type=object", joined)
+        self.assertIn("parakeet_inference result aligned_words=0 token_confidence_present=False hypothesis_type=object", joined)
         self.assertNotIn("private audio", joined)
 
     def test_configure_logging_configures_worker_stderr_once(self):

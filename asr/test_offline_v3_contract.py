@@ -154,18 +154,32 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         with self.assertRaises(offline.ContractError):
             offline.build_candidate(7.435, [{"start_seconds": 7.36, "end_seconds": "7.44", "text": "fixture", "confidence": .9}])
 
-    def test_extracts_real_nemo_word_timestamps_and_parallel_confidence(self):
+    def test_extracts_token_confidence_by_word_offsets(self):
+        words = [
+            {"word": f"word-{index}", "start": index, "end": index + 1, "start_offset": index, "end_offset": index + 1}
+            for index in range(213)
+        ]
+        chars = [
+            {"char": ["first", "extra"], "start_offset": 0, "end_offset": 1},
+            {"char": ["second", "extra"], "start_offset": 1, "end_offset": 2},
+            *[{"char": [f"token-{index}"], "start_offset": index, "end_offset": index + 1} for index in range(2, 213)],
+        ]
         result = SimpleNamespace(
-            timestamp={"word": [{"word": "accepted", "start": 0.0, "end": 1.0}, {"word": "selected", "start": 1.0, "end": 2.0}]},
-            word_confidence=[.9, .4],
+            timestamp={"word": words, "char": chars},
+            token_confidence=[.9, .2, .8, .3] + [.7] * 211,
         )
-        self.assertEqual(offline.extract_aligned_words(result), [
-            {"start_seconds": 0.0, "end_seconds": 1.0, "text": "accepted", "confidence": .9},
-            {"start_seconds": 1.0, "end_seconds": 2.0, "text": "selected", "confidence": .4},
-        ])
-        with self.assertRaises(offline.ContractError):
-            offline.extract_aligned_words(SimpleNamespace(timestamp=result.timestamp, word_confidence=[.9]))
+        segments = offline.extract_aligned_words(result)
+        self.assertEqual(len(segments), 213)
+        self.assertEqual([segment["confidence"] for segment in segments[:3]], [.2, .3, .7])
 
+    def test_extract_aligned_words_defaults_missing_token_confidence_to_zero(self):
+        result = SimpleNamespace(
+            timestamp={
+                "word": [{"word": "accepted", "start": 0.0, "end": 1.0, "start_offset": 0, "end_offset": 1}],
+                "char": [{"char": ["accepted"], "start_offset": 0, "end_offset": 1}],
+            },
+        )
+        self.assertEqual(offline.extract_aligned_words(result)[0]["confidence"], 0.0)
     def test_extract_aligned_words_coerces_real_decoder_scalar_types(self):
         class ItemScalar:
             def __init__(self, value):
@@ -191,8 +205,11 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
             confidence = torch.tensor(.75)
 
         segments = offline.extract_aligned_words(SimpleNamespace(
-            timestamp={"word": [{"word": "scalar", "start": start, "end": end}]},
-            word_confidence=[confidence],
+            timestamp={
+                "word": [{"word": "scalar", "start": start, "end": end, "start_offset": 0, "end_offset": 1}],
+                "char": [{"char": ["scalar"], "start_offset": 0, "end_offset": 1}],
+            },
+            token_confidence=[confidence],
         ))
 
         self.assertEqual(segments, [{"start_seconds": 1.25, "end_seconds": 2.5, "text": "scalar", "confidence": .75}])
@@ -200,8 +217,11 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
 
     def test_extract_aligned_words_bumps_zero_length_word_by_decoder_frame(self):
         segments = offline.extract_aligned_words(SimpleNamespace(
-            timestamp={"word": [{"word": "zero", "start": 1, "end": 1}]},
-            word_confidence=[.5],
+            timestamp={
+                "word": [{"word": "zero", "start": 1, "end": 1, "start_offset": 0, "end_offset": 1}],
+                "char": [{"char": ["zero"], "start_offset": 0, "end_offset": 1}],
+            },
+            token_confidence=[.5],
         ))
 
         self.assertEqual(segments[0]["end_seconds"], 1 + offline.DECODER_FRAME_SECONDS)
@@ -209,23 +229,29 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
     def test_extract_aligned_words_reports_descending_end_with_index(self):
         with self.assertRaisesRegex(offline.ContractError, r"index 0.*end") as caught:
             offline.extract_aligned_words(SimpleNamespace(
-                timestamp={"word": [{"word": "backward", "start": 2, "end": 1}]},
-                word_confidence=[.5],
+                timestamp={
+                    "word": [{"word": "backward", "start": 2, "end": 1, "start_offset": 0, "end_offset": 1}],
+                    "char": [{"char": ["backward"], "start_offset": 0, "end_offset": 1}],
+                },
+                token_confidence=[.5],
             ))
 
-        self.assertIn("word={'word': 'backward', 'start': 2, 'end': 1}", str(caught.exception))
+        self.assertIn("'word': 'backward'", str(caught.exception))
         self.assertIn("types(start=int, end=int, confidence=float)", str(caught.exception))
-    def test_extract_aligned_words_rejects_confidence_above_one(self):
-        with self.assertRaisesRegex(offline.ContractError, r"confidence"):
-            offline.extract_aligned_words(SimpleNamespace(
-                timestamp={"word": [{"word": "overconfident", "start": 0, "end": 1}]},
-                word_confidence=[1.2],
-            ))
+    def test_extract_aligned_words_defaults_invalid_token_confidence_to_zero(self):
+        segments = offline.extract_aligned_words(SimpleNamespace(
+            timestamp={
+                "word": [{"word": "overconfident", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
+                "char": [{"char": ["overconfident"], "start_offset": 0, "end_offset": 1}],
+            },
+            token_confidence=[1.2],
+        ))
+        self.assertEqual(segments[0]["confidence"], 0.0)
 
 
     def test_extract_aligned_words_keeps_bad_evidence_rejections_specific(self):
         with self.assertRaisesRegex(offline.ContractError, r"no aligned word evidence.*words=NoneType\(len=n/a\).*confidences=list\(len=0\)"):
-            offline.extract_aligned_words(SimpleNamespace(timestamp={}, word_confidence=[]))
+            offline.extract_aligned_words(SimpleNamespace(timestamp={}, token_confidence=[]))
         cases = (
             (["not a word"], [.5]),
             ([{"word": "", "start": 0, "end": 1}], [.5]),
@@ -234,12 +260,21 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         )
         for words, confidences in cases:
             with self.subTest(words=words), self.assertRaisesRegex(offline.ContractError, r"index 0.*types\(start=.*end=.*confidence=.*\)"):
-                offline.extract_aligned_words(SimpleNamespace(timestamp={"word": words}, word_confidence=confidences))
+                offline.extract_aligned_words(SimpleNamespace(
+                    timestamp={"word": words, "char": [{"char": ["token"], "start_offset": 0, "end_offset": 1}]},
+                    token_confidence=confidences,
+                ))
 
     def test_extract_aligned_words_truncates_word_repr_in_error(self):
         word = {"padding": "x" * 400, "word": "", "start": 0, "end": 1}
         with self.assertRaises(offline.ContractError) as caught:
-            offline.extract_aligned_words(SimpleNamespace(timestamp={"word": [word]}, word_confidence=[.5]))
+            offline.extract_aligned_words(SimpleNamespace(
+                timestamp={
+                    "word": [word],
+                    "char": [{"char": ["token"], "start_offset": 0, "end_offset": 1}],
+                },
+                token_confidence=[.5],
+            ))
         rendered_word = str(caught.exception).split("; types", 1)[0].rsplit("word=", 1)[1]
         self.assertEqual(len(rendered_word), 200)
     def test_request_rejects_url_and_unknown_fields(self):

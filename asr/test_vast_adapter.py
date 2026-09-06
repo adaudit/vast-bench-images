@@ -2,6 +2,7 @@ import base64
 import io
 import importlib.util
 import struct
+import queue
 import sys
 import threading
 import unittest
@@ -203,7 +204,19 @@ class VastAdapterTest(unittest.TestCase):
                         if index == 1 else
                         [{"word": f"chunk-{index}", "start": 0, "end": 1}]
                     )
-                    hypotheses.append(type("Hypothesis", (), {"timestamp": {"word": words}, "word_confidence": [.9] * len(words)})())
+                    hypotheses.append(type("Hypothesis", (), {
+                        "timestamp": {
+                            "word": [
+                                {"word": word["word"], "start": word["start"], "end": word["end"], "start_offset": index, "end_offset": index + 1}
+                                for index, word in enumerate(words)
+                            ],
+                            "char": [
+                                {"char": [word["word"]], "start_offset": index, "end_offset": index + 1}
+                                for index, word in enumerate(words)
+                            ],
+                        },
+                        "token_confidence": [.9] * len(words),
+                    })())
                 return hypotheses
 
         previous_torch = sys.modules.get("torch")
@@ -231,6 +244,69 @@ class VastAdapterTest(unittest.TestCase):
         self.assertEqual([segment["text"] for segment in segments], ["owned", "next", "chunk-2", "chunk-3"])
         self.assertEqual([segment["start_seconds"] for segment in segments], [59.0, 61.0, 120.0, 180.0])
         self.assertTrue(all(previous["end_seconds"] <= current["end_seconds"] for previous, current in zip(segments, segments[1:])))
+    def test_concurrent_batches_record_two_checked_out_lanes(self):
+        server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
+        entered = threading.Barrier(2)
+
+        class Model:
+            def transcribe(self, paths, **_):
+                entered.wait(1)
+                return [type("Hypothesis", (), {
+                    "timestamp": {
+                        "word": [{"word": "word", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
+                        "char": [{"char": ["word"], "start_offset": 0, "end_offset": 1}],
+                    },
+                    "token_confidence": [.9],
+                })() for _ in paths]
+
+        class FakePool:
+            def __init__(self, instances, loader):
+                self.instances = [type("Lane", (), {"model": loader(), "stream": None})() for _ in range(instances)]
+                self.available = queue.Queue()
+                for lane in self.instances:
+                    self.available.put(lane)
+
+            def checkout(self):
+                return self.available.get()
+
+            def checkin(self, lane):
+                self.available.put(lane)
+
+        pool_class = server.ParakeetPool
+        server.ParakeetPool = FakePool
+        try:
+            runtime = server.Runtime(model_verifier=lambda _: None, model_loader=Model)
+            runtime.initialize_once()
+        finally:
+            server.ParakeetPool = pool_class
+        payload = {
+            "request_version": adapter.REQUEST_VERSION,
+            "lane": adapter.LANE,
+            "model_id": adapter.MODEL_ID,
+            "model_revision": adapter.MODEL_REVISION,
+            "audio_filename": "sample.wav",
+            "audio_duration_seconds": 1,
+            "audio_base64": base64.b64encode(self._wav(b"\0\0" * 16000)).decode(),
+        }
+        errors = []
+        threads = [
+            threading.Thread(target=lambda: self._transcribe(runtime, payload, errors))
+            for _ in range(2)
+        ]
+        [thread.start() for thread in threads]
+        [thread.join() for thread in threads]
+        self.assertEqual(errors, [])
+        stats = runtime.stats()
+        self.assertEqual(stats["max_concurrent_lanes"], 2)
+        self.assertEqual({entry["lane_index"] for entry in stats["recent"]}, {0, 1})
+
+    @staticmethod
+    def _transcribe(runtime, payload, errors):
+        try:
+            runtime.transcribe_batch([payload])
+        except Exception as error:
+            errors.append(error)
+
     def test_rejects_foreign_request_identity(self):
         with self.assertRaises(adapter.ContractError):
             adapter.parse_request({"request_version": "wrong"})

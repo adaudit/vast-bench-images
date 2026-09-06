@@ -113,20 +113,54 @@ def _aligned_word_error(index, word, start, end, confidence, check):
     )
 
 
+def _token_records(timestamp, confidences):
+    chars = timestamp.get("char") if isinstance(timestamp, dict) else None
+    if not isinstance(chars, list) or not isinstance(confidences, (list, tuple)):
+        return []
+    records = []
+    token_index = 0
+    for char in chars:
+        if not isinstance(char, dict):
+            continue
+        values = char.get("char")
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        start, end = _number(char.get("start_offset")), _number(char.get("end_offset"))
+        for _ in values:
+            confidence = _number(confidences[token_index]) if token_index < len(confidences) else None
+            token_index += 1
+            if start is not None and end is not None and confidence is not None and 0 <= confidence <= 1:
+                records.append((start, end, confidence))
+    return records
+
+
+def _word_confidence(word, records):
+    start, end = _number(word.get("start_offset")), _number(word.get("end_offset"))
+    if start is None or end is None or end < start:
+        return 0.0
+    confidence = None
+    for char_start, char_end, token_confidence in records:
+        if start <= char_start and char_end <= end:
+            confidence = token_confidence if confidence is None else min(confidence, token_confidence)
+    return confidence if confidence is not None else 0.0
+
+
 def extract_aligned_words(result):
     timestamp = getattr(result, "timestamp", None)
     words = timestamp.get("word") if isinstance(timestamp, dict) else None
-    confidences = getattr(result, "word_confidence", None)
-    if not isinstance(words, list) or not isinstance(confidences, list) or len(confidences) != len(words):
+    confidences = getattr(result, "token_confidence", None)
+    if not isinstance(words, list):
         raise ContractError(
             "model produced no aligned word evidence: "
             f"words={type(words).__name__}(len={len(words) if isinstance(words, list) else 'n/a'}), "
-            f"confidences={type(confidences).__name__}(len={len(confidences) if isinstance(confidences, list) else 'n/a'})"
+            f"confidences={type(confidences).__name__}(len={len(confidences) if isinstance(confidences, (list, tuple)) else 'n/a'})"
         )
     if not words:
         return []
+    records = _token_records(timestamp, confidences)
     segments = []
-    for index, (word, confidence) in enumerate(zip(words, confidences)):
+    for index, word in enumerate(words):
+        confidence = _word_confidence(word, records) if isinstance(word, dict) else 0.0
         if not isinstance(word, dict):
             raise _aligned_word_error(index, word, None, None, confidence, "word must be a dict")
         text, start, end = word.get("word"), word.get("start"), word.get("end")
@@ -159,7 +193,7 @@ def decode_with_nemo(model_path, audio_path):
     with open_dict(model.cfg.decoding):
         model.cfg.decoding.compute_timestamps = True
         model.cfg.decoding.preserve_alignments = True
-        model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
+        model.cfg.decoding.confidence_cfg = {"preserve_token_confidence": True, "preserve_word_confidence": False}
     model.change_decoding_strategy(model.cfg.decoding, verbose=False)
     return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
 

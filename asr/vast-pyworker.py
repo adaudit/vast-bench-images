@@ -45,6 +45,9 @@ def benchmark_payload():
 def workload(payload):
     return float(len(payload["requests"]))
 
+def stats_workload(_):
+    return 1.0
+
 
 async def validated_response(client_request, model_response):
     """Fail the benchmark when its successful response is not a complete v3 batch."""
@@ -96,14 +99,22 @@ Worker(
         model_server_port=8080,
         model_log_file="/workspace/parakeet-server.log",
         model_healthcheck_url="/healthz",
-        handlers=[HandlerConfig(
-            route="/transcribe-batch",
-            allow_parallel_requests=False,
-            max_queue_time=60.0,
-            benchmark_config=BenchmarkConfig(generator=benchmark_payload, runs=1, do_warmup=False),
-            response_generator=validated_response,
-            workload_calculator=workload,
-        )],
+        handlers=[
+            HandlerConfig(
+                route="/transcribe-batch",
+                allow_parallel_requests=True,
+                max_queue_time=60.0,
+                benchmark_config=BenchmarkConfig(generator=benchmark_payload, runs=1, do_warmup=False),
+                response_generator=validated_response,
+                workload_calculator=workload,
+            ),
+            HandlerConfig(
+                route="/stats",
+                allow_parallel_requests=True,
+                max_queue_time=60.0,
+                workload_calculator=stats_workload,
+            ),
+        ],
         log_action_config=LogActionConfig(on_load=[READY_MARKER]),
     )
 ).run()

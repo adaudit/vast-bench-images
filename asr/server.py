@@ -7,6 +7,8 @@ import tempfile
 import sys
 import threading
 import time
+import traceback
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -59,6 +61,10 @@ class Runtime:
         self.state = "not_started"
         self.error = None
         self._state_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        self._recent = deque(maxlen=256)
+        self._checked_out_lanes = 0
+        self._max_concurrent_lanes = 0
 
     @property
     def ready(self):
@@ -102,6 +108,51 @@ class Runtime:
             return 503, {"status": "failed", "cause": "initialization failed", "error": self.error}
         return 503, {"status": "loading" if self.state == "loading" else "not started"}
 
+    def stats(self):
+        with self._stats_lock:
+            return {
+                "recent": [dict(entry) for entry in self._recent],
+                "max_concurrent_lanes": self._max_concurrent_lanes,
+                "lane_count": self.instance_count,
+            }
+
+    def _checkout_lane(self):
+        lane = self.pool.checkout()
+        with self._stats_lock:
+            self._checked_out_lanes += 1
+            self._max_concurrent_lanes = max(self._max_concurrent_lanes, self._checked_out_lanes)
+        return lane
+
+    def _checkin_lane(self, lane):
+        with self._stats_lock:
+            self._checked_out_lanes -= 1
+        self.pool.checkin(lane)
+
+    def _record_timing(self, lane_index, chunk_count, sub_batches, audio_seconds, gpu_seconds, started, finished):
+        with self._stats_lock:
+            max_concurrent_lanes = self._max_concurrent_lanes
+            self._recent.append({
+                "lane_index": lane_index,
+                "chunk_count": chunk_count,
+                "sub_batches": sub_batches,
+                "audio_seconds": audio_seconds,
+                "gpu_seconds": gpu_seconds,
+                "started_monotonic": started,
+                "finished_monotonic": finished,
+                "max_concurrent_lanes": max_concurrent_lanes,
+            })
+        LOGGER.info(
+            "parakeet_request_timing lane_index=%s chunk_count=%d sub_batches=%d audio_seconds=%.3f gpu_seconds=%.3f started_monotonic=%.6f finished_monotonic=%.6f max_concurrent_lanes=%d",
+            lane_index,
+            chunk_count,
+            sub_batches,
+            audio_seconds,
+            gpu_seconds,
+            started,
+            finished,
+            max_concurrent_lanes,
+        )
+
     def check_ready(self):
         return self.ready
 
@@ -112,14 +163,17 @@ class Runtime:
         with open_dict(model.cfg.decoding):
             model.cfg.decoding.compute_timestamps = True
             model.cfg.decoding.preserve_alignments = True
-            model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
+            model.cfg.decoding.confidence_cfg = {"preserve_token_confidence": True, "preserve_word_confidence": False}
         model.change_decoding_strategy(model.cfg.decoding, verbose=False)
         return model
 
     def _transcribe_many(self, requests):
         files, chunk_request_indexes = [], []
-        request_batches = [0] * len(requests)
         started = time.monotonic()
+        lane = None
+        lane_index = None
+        gpu_started = None
+        sub_batches = 0
         try:
             for request_index, request in enumerate(requests):
                 for start, end in request.chunks:
@@ -130,7 +184,9 @@ class Runtime:
                     finally:
                         audio.close()
                     chunk_request_indexes.append(request_index)
-            lane = self.pool.checkout()
+            lane = self._checkout_lane()
+            lane_index = next(index for index, candidate in enumerate(self.pool.instances) if candidate is lane)
+            gpu_started = time.monotonic()
             try:
                 chunk_segments = [[] for _ in requests]
                 offset = 0
@@ -138,9 +194,8 @@ class Runtime:
                     size, retried = min(CHUNK_BATCH, len(files) - offset), False
                     while True:
                         paths = files[offset:offset + size]
-                        for request_index in set(chunk_request_indexes[offset:offset + size]):
-                            request_batches[request_index] += 1
                         try:
+                            sub_batches += 1
                             if _cuda_available():
                                 with torch.cuda.stream(lane.stream):
                                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -162,30 +217,32 @@ class Runtime:
                         timestamp = getattr(hypothesis, "timestamp", None)
                         words = timestamp.get("word") if isinstance(timestamp, dict) else None
                         LOGGER.info(
-                            "parakeet_inference result aligned_words=%d word_confidence_present=%s hypothesis_type=%s",
+                            "parakeet_inference result aligned_words=%d token_confidence_present=%s hypothesis_type=%s",
                             len(words) if isinstance(words, list) else 0,
-                            getattr(hypothesis, "word_confidence", None) is not None,
+                            getattr(hypothesis, "token_confidence", None) is not None,
                             type(hypothesis).__name__,
                         )
                         chunk_segments[request_index].append(extract_aligned_words(hypothesis))
                     offset += size
-                segments = [batch_and_restitch(chunk_segments[index], request.chunks) for index, request in enumerate(requests)]
-                elapsed = time.monotonic() - started
-                for request_index, request in enumerate(requests):
-                    LOGGER.info(
-                        "parakeet_chunked_inference filename=%s chunk_count=%d sub_batches=%d elapsed_seconds=%.3f",
-                        request.audio_filename,
-                        len(request.chunks),
-                        request_batches[request_index],
-                        elapsed,
-                    )
-                return segments
+                return [batch_and_restitch(chunk_segments[index], request.chunks) for index, request in enumerate(requests)]
             finally:
-                self.pool.checkin(lane)
+                self._checkin_lane(lane)
         finally:
+            finished = time.monotonic()
+            self._record_timing(
+                lane_index,
+                len(chunk_request_indexes),
+                sub_batches,
+                sum(request.audio_duration_seconds for request in requests),
+                (finished - gpu_started) if gpu_started is not None else 0.0,
+                started,
+                finished,
+            )
             for path in files:
-                try: os.unlink(path)
-                except FileNotFoundError: pass
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
 
     def transcribe(self, payload):
         return self.transcribe_batch([payload])[0]
@@ -230,16 +287,21 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
             self._send(status, payload)
 
         def do_POST(self):
-            if self.path not in ("/transcribe", "/transcribe-batch") or self.headers.get("Content-Type") != "application/json":
+            if self.path not in ("/transcribe", "/transcribe-batch", "/stats") or self.headers.get("Content-Type") != "application/json":
                 self._send(404, {"error": "not found"})
                 return
             try:
-                if not runtime.ready:
-                    raise NotReadyError("runtime is not ready")
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 700 * 1024 * 1024:
                     raise ContractError("request body is outside the permitted limit")
                 payload = json.loads(self.rfile.read(length))
+                if self.path == "/stats":
+                    if payload != {}:
+                        raise ContractError("stats request must be an empty JSON object")
+                    self._send(200, runtime.stats())
+                    return
+                if not runtime.ready:
+                    raise NotReadyError("runtime is not ready")
                 self._send(200, runtime.transcribe(payload) if self.path == "/transcribe" else runtime.transcribe_batch(payload["requests"]))
             except NotReadyError:
                 LOGGER.info("parakeet_http status=503 category=not_ready")
@@ -255,7 +317,11 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                 self._send(400, {"error": "invalid request", "reason": str(error)[:300]})
             except Exception as error:
                 LOGGER.exception("parakeet_http status=500 category=%s", type(error).__name__)
-                self._send(500, {"error": "internal error", "type": type(error).__name__, "message": str(error)})
+                reason = " | ".join(
+                    f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
+                    for frame in traceback.extract_tb(error.__traceback__)[-3:]
+                )[:600]
+                self._send(500, {"error": "internal error", "type": type(error).__name__, "message": str(error), "reason": reason})
 
         def log_message(self, *_):
             pass
