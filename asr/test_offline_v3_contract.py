@@ -5,9 +5,10 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -277,6 +278,83 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
             ))
         rendered_word = str(caught.exception).split("; types", 1)[0].rsplit("word=", 1)[1]
         self.assertEqual(len(rendered_word), 200)
+
+    def test_decode_with_nemo_disables_cuda_graph_decoder(self):
+        class AttrDict(dict):
+            def __getattr__(self, name):
+                try:
+                    return self[name]
+                except KeyError:
+                    raise AttributeError(name)
+
+            def __setattr__(self, name, value):
+                self[name] = AttrDict(value) if isinstance(value, dict) and not isinstance(value, AttrDict) else value
+
+        hypothesis = SimpleNamespace(
+            timestamp={
+                "word": [{"word": "ok", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
+                "char": [{"char": ["ok"], "start_offset": 0, "end_offset": 1}],
+            },
+            token_confidence=[.9],
+        )
+
+        class Model:
+            def __init__(self, decoding):
+                self.cfg = AttrDict({"decoding": decoding})
+                self.strategies = []
+                self.transcribed = None
+
+            def change_decoding_strategy(self, decoding_cfg, *, verbose):
+                self.strategies.append((decoding_cfg, verbose))
+
+            def transcribe(self, paths, *, timestamps):
+                self.transcribed = (paths, timestamps)
+                return [hypothesis]
+
+        restored = [Model(AttrDict({"greedy": AttrDict({"max_symbols": 10})})), Model(AttrDict({}))]
+        configured, created = restored
+
+        def restore_from(path):
+            model = restored.pop(0)
+            model.restored_from = path
+            return model
+
+        nemo = ModuleType("nemo")
+        collections = ModuleType("nemo.collections")
+        asr = ModuleType("nemo.collections.asr")
+        models = ModuleType("nemo.collections.asr.models")
+        models.ASRModel = type("ASRModel", (), {"restore_from": staticmethod(restore_from)})
+        nemo.collections = collections; collections.asr = asr; asr.models = models
+        omegaconf = ModuleType("omegaconf")
+
+        class FakeOpenDict:
+            def __init__(self, config): self.config = config
+            def __enter__(self): return self.config
+            def __exit__(self, *_): return None
+
+        omegaconf.open_dict = FakeOpenDict
+        stubs = {"nemo": nemo, "nemo.collections": collections, "nemo.collections.asr": asr, "nemo.collections.asr.models": models, "omegaconf": omegaconf}
+        previous = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+        try:
+            segments = [offline.decode_with_nemo("model-a.nemo", "audio.wav"), offline.decode_with_nemo("model-b.nemo", "audio.wav")]
+        finally:
+            for name, module in previous.items():
+                if module is None:
+                    del sys.modules[name]
+                else:
+                    sys.modules[name] = module
+        self.assertEqual(segments, [[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "ok", "confidence": .9}]] * 2)
+        self.assertIs(configured.cfg.decoding.greedy.use_cuda_graph_decoder, False)
+        self.assertEqual(configured.cfg.decoding.greedy.max_symbols, 10)
+        self.assertIs(created.cfg.decoding.greedy.use_cuda_graph_decoder, False)
+        self.assertEqual([model.restored_from for model in (configured, created)], ["model-a.nemo", "model-b.nemo"])
+        self.assertEqual([model.transcribed for model in (configured, created)], [(["audio.wav"], True)] * 2)
+        for model in (configured, created):
+            self.assertIs(model.cfg.decoding.compute_timestamps, True)
+            self.assertIs(model.cfg.decoding.preserve_alignments, True)
+            self.assertEqual(model.cfg.decoding.confidence_cfg, {"preserve_token_confidence": True, "preserve_word_confidence": False})
+            self.assertEqual(model.strategies, [(model.cfg.decoding, False)])
     def test_request_rejects_url_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "request.json"

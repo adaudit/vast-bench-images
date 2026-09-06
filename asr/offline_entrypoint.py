@@ -194,6 +194,10 @@ def decode_with_nemo(model_path, audio_path):
         model.cfg.decoding.compute_timestamps = True
         model.cfg.decoding.preserve_alignments = True
         model.cfg.decoding.confidence_cfg = {"preserve_token_confidence": True, "preserve_word_confidence": False}
+        if "greedy" not in model.cfg.decoding:
+            model.cfg.decoding.greedy = {}
+        # NeMo's CUDA-graph TDT decoder captures a stream per lane and crashes when lanes decode concurrently.
+        model.cfg.decoding.greedy.use_cuda_graph_decoder = False
     model.change_decoding_strategy(model.cfg.decoding, verbose=False)
     return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
 

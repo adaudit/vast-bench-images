@@ -4,6 +4,7 @@ import importlib.util
 import struct
 import queue
 import sys
+import types
 import threading
 import unittest
 import wave
@@ -97,6 +98,70 @@ class VastAdapterTest(unittest.TestCase):
         runtime.initialize_once()
         got = runtime.transcribe_batch([payload("a.wav"), payload("b.wav")])
         self.assertEqual((loads, calls, [x["segments"][0]["text"] for x in got]), ([1, 1, 1], [2], ["a.wav", "b.wav"]))
+    def test_load_model_disables_cuda_graph_decoder(self):
+        server = importlib.util.module_from_spec(SERVER_SPEC); SERVER_SPEC.loader.exec_module(server)
+
+        class AttrDict(dict):
+            def __getattr__(self, name):
+                try:
+                    return self[name]
+                except KeyError:
+                    raise AttributeError(name)
+
+            def __setattr__(self, name, value):
+                self[name] = AttrDict(value) if isinstance(value, dict) and not isinstance(value, AttrDict) else value
+
+        class Model:
+            def __init__(self, decoding):
+                self.cfg = AttrDict({"decoding": decoding})
+                self.strategies = []
+
+            def change_decoding_strategy(self, decoding_cfg, *, verbose):
+                self.strategies.append((decoding_cfg, verbose))
+
+        restored = [Model(AttrDict({"greedy": AttrDict({"max_symbols": 10})})), Model(AttrDict({}))]
+
+        def restore_from(path):
+            model = restored.pop(0)
+            model.restored_from = path
+            return model
+
+        nemo = types.ModuleType("nemo")
+        collections = types.ModuleType("nemo.collections")
+        asr = types.ModuleType("nemo.collections.asr")
+        models = types.ModuleType("nemo.collections.asr.models")
+        models.ASRModel = type("ASRModel", (), {"restore_from": staticmethod(restore_from)})
+        nemo.collections = collections; collections.asr = asr; asr.models = models
+        omegaconf = types.ModuleType("omegaconf")
+
+        class FakeOpenDict:
+            def __init__(self, config): self.config = config
+            def __enter__(self): return self.config
+            def __exit__(self, *_): return None
+
+        omegaconf.open_dict = FakeOpenDict
+        stubs = {"nemo": nemo, "nemo.collections": collections, "nemo.collections.asr": asr, "nemo.collections.asr.models": models, "omegaconf": omegaconf}
+        previous = {name: sys.modules.get(name) for name in stubs}
+        sys.modules.update(stubs)
+        try:
+            runtime = server.Runtime(model_verifier=lambda _: None)
+            configured, created = runtime._load_model(), runtime._load_model()
+        finally:
+            for name, module in previous.items():
+                if module is None:
+                    del sys.modules[name]
+                else:
+                    sys.modules[name] = module
+        self.assertIs(configured.cfg.decoding.greedy.use_cuda_graph_decoder, False)
+        self.assertEqual(configured.cfg.decoding.greedy.max_symbols, 10)
+        self.assertIs(created.cfg.decoding.greedy.use_cuda_graph_decoder, False)
+        self.assertEqual([model.restored_from for model in (configured, created)], [str(server.MODEL_PATH)] * 2)
+        for model in (configured, created):
+            self.assertIs(model.cfg.decoding.compute_timestamps, True)
+            self.assertIs(model.cfg.decoding.preserve_alignments, True)
+            self.assertEqual(model.cfg.decoding.confidence_cfg, {"preserve_token_confidence": True, "preserve_word_confidence": False})
+            self.assertEqual(model.strategies, [(model.cfg.decoding, False)])
+
     def test_request_keeps_short_audio_as_one_chunk(self):
         request = adapter.parse_request({
             "request_version": adapter.REQUEST_VERSION,
