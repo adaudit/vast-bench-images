@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
-
 log=/workspace/parakeet-server.log
 startup_timeout=${STARTUP_TIMEOUT_SECONDS:-1800}; startup_timeout=${startup_timeout#\"}; startup_timeout=${startup_timeout%\"}
 deadline=$(( $(date +%s) + startup_timeout ))
+printf 'STAGE container_start timestamp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 report_addr="${REPORT_ADDR:-https://run.vast.ai}"
 
 report_error_and_exit() {
@@ -28,11 +28,12 @@ from urllib.request import Request, urlopen
 request = Request("https://console.vast.ai/api/v0/sign_cert/?instance_id=" + sys.argv[1], data=sys.stdin.buffer.read(), headers={"Content-Type": "application/octet-stream"}, method="POST")
 sys.stdout.buffer.write(urlopen(request, timeout=30).read())
 ' "$CONTAINER_ID" < /etc/instance.csr > /etc/instance.crt 2>/dev/null || report_error_and_exit "failed to sign certificate"
+  printf 'STAGE cert_signed timestamp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 fi
 
 export REPORT_ADDR="$report_addr" WORKER_PORT USE_SSL UNSECURED
 : > "$log"
-python3 /workspace/server.py >>"$log" 2>&1 &
+python3 -u /workspace/server.py 2>&1 | tee -a "$log" &
 
 while :; do
   health=$(python3 -c '
