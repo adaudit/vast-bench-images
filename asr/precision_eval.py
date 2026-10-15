@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Metrics-only Parakeet-v3 fp32/bf16 evaluation; no transcript serialization.
 
-All three passes independently restore the baked extracted model through
-server.Runtime's loader (identical timestamp/confidence settings, graphs off).
+All four passes independently restore the baked extracted model through
+server.Runtime's loader (identical timestamp/confidence settings).
 bf16 uses CUDA autocast with fp32 weights/frontend. bf16_weights additionally
 casts model weights/buffers to bfloat16 after restore, then restores preprocessor
 buffers to fp32 for stable audio feature extraction; autocast bridges fp32
@@ -10,6 +10,12 @@ features to eligible bf16 encoder/decoder operations. No fp32 weight master copy
 is retained. fp32 disables TF32. One file/batch, no warmup; wall time includes
 first inference. Load time includes dtype conversion; peak memory includes the
 initial fp32 restore, so loaded_gpu_allocated_bytes also reports post-cast memory.
+fp32_graphs re-enables greedy CUDA graph decoding on one fp32 model, rebuilding
+its decoding strategy. This control runs LAST, single-lane and serially, so
+only one model ever captures graphs. Its wall time includes first capture
+(no warmup), and speedup_vs_fp32 compares against the graphs-off fp32 pass.
+The bf16_word_count field denotes candidate word count for every comparison,
+including this fp32 graph control; fp32_word_count always denotes the reference.
 
 WER is exact Levenshtein over casefolded, punctuation-stripped aligned words.
 Timing/confidence compare only equal-word alignment pairs; coverage is reported.
@@ -135,7 +141,7 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     outputs, precisions = {}, {}
-    for precision in ('fp32', 'bf16', 'bf16_weights'):
+    for precision in ('fp32', 'bf16', 'bf16_weights', 'fp32_graphs'):
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
@@ -145,6 +151,9 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         if precision == 'bf16_weights':
             model.to(dtype=torch.bfloat16)
             model.preprocessor.float()
+        elif precision == 'fp32_graphs':
+            model.cfg.decoding.greedy.use_cuda_graph_decoder = True
+            model.change_decoding_strategy(model.cfg.decoding, verbose=False)
         torch.cuda.synchronize()
         load_s = time.perf_counter() - started
         loaded_memory = torch.cuda.memory_allocated()
@@ -152,7 +161,7 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         started = time.perf_counter()
         with torch.inference_mode():
             for path in paths:
-                autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision != 'fp32' else contextlib.nullcontext()
+                autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision in ('bf16', 'bf16_weights') else contextlib.nullcontext()
                 with autocast:
                     words = extract_aligned_words(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0])
                 outputs[precision][path.stem] = words
@@ -167,7 +176,7 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         gc.collect()
         torch.cuda.empty_cache()
     comparisons = {}
-    for precision in ('bf16', 'bf16_weights'):
+    for precision in ('bf16', 'bf16_weights', 'fp32_graphs'):
         cases = {case: dict(duration_s=duration, **compare_words(outputs['fp32'][case], outputs[precision][case]))
                  for case, duration in durations.items()}
         sums = {key: sum(case[key] for case in cases.values()) for key in (
@@ -177,6 +186,8 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         sums['max_timing_drift_ms'] = max(maxima) if maxima else None
         comparisons[precision] = dict(cases=cases, aggregate=dict(
             case_count=len(cases), duration_s=sum(durations.values()), **_summarize(sums)))
+    precisions['fp32_graphs']['transcribe_speedup_vs_fp32'] = _divide(
+        precisions['fp32']['transcribe_wall_s'], precisions['fp32_graphs']['transcribe_wall_s'])
     return dict(comparisons=comparisons, precisions=precisions)
 
 
