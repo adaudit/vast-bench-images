@@ -23,6 +23,61 @@ from asr.startup import Stages
 
 
 class BatchReviewFixesTest(unittest.TestCase):
+    def test_tdt_scalar_tensor_confidence_survives_real_benchmark_path(self):
+        class ScalarTensor:
+            ndim = 0
+            def __init__(self, value):
+                self.value = value
+            def item(self):
+                return self.value
+        hypothesis = SimpleNamespace(
+            timestamp={"word": [
+                {"word": "accepted", "start": 0.0, "end": 1.0},
+                {"word": "selected", "start": 1.0, "end": 2.0},
+            ]},
+            word_confidence=[ScalarTensor(.9), ScalarTensor(.4)],
+        )
+        model = SimpleNamespace(transcribe=lambda *_args, **_kwargs: [hypothesis])
+        runtime = server.Runtime(model_loader=lambda: model)
+        candidates = []
+        def build(duration, segments):
+            candidate = pin.build_candidate(duration, segments)
+            candidates.append(json.loads(json.dumps(candidate, allow_nan=False)))
+            return candidate
+        fixture = Path(__file__).parent / "fixtures" / "audio" / "2086-149220-0033.wav"
+        torch = ModuleType("torch")
+        torch.cuda = SimpleNamespace(stream=lambda _: contextlib.nullcontext())
+        for with_cuda_stream in (False, True):
+            with self.subTest(with_cuda_stream=with_cuda_stream):
+                runtime._streams = {id(model): SimpleNamespace(synchronize=lambda: None)} if with_cuda_stream else {}
+                with patch.dict(sys.modules, {"torch": torch}), patch.object(server, "Path", return_value=fixture), patch.object(server, "build_candidate", side_effect=build):
+                    runtime._benchmark(model)
+                self.assertEqual(candidates[-1]["selected_segment_indexes"], [1])
+                self.assertEqual([segment["confidence"] for segment in candidates[-1]["segments"]], [.9, .4])
+
+    def test_scalar_confidence_normalization_preserves_strict_evidence_contract(self):
+        class ScalarTensor:
+            ndim = 0
+            def __init__(self, value):
+                self.value = value
+            def item(self):
+                return self.value
+        word = {"word": "evidence", "start": 0.0, "end": 1.0}
+        for value in (True, ".9", complex(.9), float("nan"), float("inf"), float("-inf"), -.1, 1.1, [.9]):
+            with self.subTest(value=value), self.assertRaises(pin.ContractError):
+                pin.extract_aligned_words(SimpleNamespace(timestamp={"word": [word]}, word_confidence=[ScalarTensor(value)]))
+        nonscalar = ScalarTensor(.9)
+        nonscalar.ndim = 1
+        with self.assertRaises(pin.ContractError):
+            pin.extract_aligned_words(SimpleNamespace(timestamp={"word": [word]}, word_confidence=[nonscalar]))
+        with self.assertRaises(pin.ContractError):
+            pin.extract_aligned_words(SimpleNamespace(timestamp={"word": [word]}, word_confidence=[".9"]))
+        # The production candidate contract still accepts JSON numbers only,
+        # not tensors or coercible strings presented directly as evidence.
+        for confidence in (ScalarTensor(.9), ".9", True):
+            with self.subTest(candidate_confidence=confidence), self.assertRaises(pin.ContractError):
+                pin.build_candidate(1, [{"text": "evidence", "start_seconds": 0.0, "end_seconds": 1.0, "confidence": confidence}])
+
     def test_extracted_loader_rebuilds_failed_lane_without_archive_or_cuda(self):
         models, connectors, restores, resets = [], [], [], []
         class Connector:

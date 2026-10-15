@@ -99,6 +99,11 @@ def extract_aligned_words(result):
         if not isinstance(word, dict):
             raise ContractError("model produced invalid aligned word evidence")
         text, start, end = word.get("word"), word.get("start"), word.get("end")
+        # NeMo 2.4.1 TDT batched decoding retains zero-dimensional tensors
+        # through word-confidence aggregation, on CPU and CUDA alike.
+        # Normalize only scalar model output; candidate validation stays strict.
+        if getattr(confidence, "ndim", None) == 0 and callable(getattr(confidence, "item", None)):
+            confidence = confidence.item()
         if not isinstance(text, str) or not text.strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or not 0 <= confidence <= 1:
             raise ContractError("model produced invalid aligned word evidence")
         segments.append({"start_seconds": start, "end_seconds": end, "text": text.strip(), "confidence": confidence})
