@@ -34,6 +34,14 @@ class ContractError(ValueError):
     pass
 
 
+class AlignmentError(ContractError):
+    pass
+
+
+class ConfidenceMismatchError(ContractError):
+    pass
+
+
 def _finite(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -86,31 +94,81 @@ def verify_model(path):
         raise ContractError("baked model checksum mismatch")
 
 
-def extract_aligned_words(result):
+def _aggregate_timestamp_word_confidence(self, words, token_confidence, token_ids):
+    """NeMo 2.4.1 sentencepiece grouping with its timestamp punctuation rule."""
+    if len(token_confidence) != len(token_ids) or (not words and len(token_ids)):
+        raise ConfidenceMismatchError("model token confidence count mismatch")
+    word_confidence = []
+    if words:
+        start = 0
+        previous_unknown = previous_underline = False
+        punctuation = self.supported_punctuation or set()
+        for index, token_id in enumerate(token_ids):
+            token = self.decode_ids_to_tokens([int(token_id)])[0]
+            token_text = self.decode_tokens_to_str([int(token_id)])
+            # asr_confidence_utils.py:453 omits the punctuation exclusion used
+            # by rnnt_decoding.py's timestamp word grouping.
+            if ((token != token_text and token_text not in punctuation) or previous_unknown) and index > start:
+                if not previous_underline:
+                    word_confidence.append(self._aggregate_confidence(token_confidence[start:index]))
+                start = index
+            previous_unknown = token == "<unk>"
+            previous_underline = token == "▁"
+        if not previous_underline:
+            word_confidence.append(self._aggregate_confidence(token_confidence[start:len(token_ids)]))
+    if len(words) != len(word_confidence):
+        # Never include decoded words in an exception, unlike the upstream error.
+        raise ConfidenceMismatchError("model word confidence count mismatch")
+    return word_confidence
+
+
+def configure_nemo_confidence(model):
+    decoding = getattr(model, "decoding", None)
+    if callable(getattr(decoding, "_aggregate_token_confidence_subwords_sentencepiece", None)):
+        # Patch the concrete decoding class so timestamps=True's per-call strategy
+        # reconstruction also uses the corrected, stateless grouping method.
+        type(decoding)._aggregate_token_confidence_subwords_sentencepiece = _aggregate_timestamp_word_confidence
+
+
+def extract_aligned_words(result, duration=None):
     timestamp = getattr(result, "timestamp", None)
     words = timestamp.get("word") if isinstance(timestamp, dict) else None
     confidences = getattr(result, "word_confidence", None)
-    if not isinstance(words, list) or not isinstance(confidences, list) or len(confidences) != len(words):
-        raise ContractError("model produced no aligned word evidence")
+    if not isinstance(words, list):
+        raise AlignmentError("model produced no aligned word evidence")
+    if not isinstance(confidences, list) or len(confidences) != len(words):
+        raise ConfidenceMismatchError("model word confidence count mismatch")
     if not words:
         return []
     segments = []
-    for word, confidence in zip(words, confidences):
+    for index, (word, confidence) in enumerate(zip(words, confidences, strict=True)):
         if not isinstance(word, dict):
-            raise ContractError("model produced invalid aligned word evidence")
+            raise AlignmentError("model produced invalid aligned word evidence")
         text, start, end = word.get("word"), word.get("start"), word.get("end")
         # NeMo 2.4.1 TDT batched decoding retains zero-dimensional tensors
         # through word-confidence aggregation, on CPU and CUDA alike.
         # Normalize only scalar model output; candidate validation stays strict.
         if getattr(confidence, "ndim", None) == 0 and callable(getattr(confidence, "item", None)):
             confidence = confidence.item()
-        if not isinstance(text, str) or not text.strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or not 0 <= confidence <= 1:
-            raise ContractError("model produced invalid aligned word evidence")
+        if not isinstance(text, str) or not text.strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end < start or not 0 <= confidence <= 1:
+            raise AlignmentError("model produced invalid aligned word evidence")
+        if end == start:
+            if not _finite(duration) or not 0 < duration <= 86400:
+                raise AlignmentError("zero-duration word requires canonical duration")
+            # A zero-duration TDT emission occupies its 80 ms decoder frame,
+            # not a measured word duration. Bound it by canonical/next-word evidence.
+            end = min(start + DECODER_FRAME_SECONDS, duration)
+            if index + 1 < len(words) and isinstance(words[index + 1], dict):
+                next_end = words[index + 1].get("end")
+                if _finite(next_end) and next_end > start:
+                    end = min(end, next_end)
+            if end <= start:
+                raise AlignmentError("model produced invalid aligned word evidence")
         segments.append({"start_seconds": start, "end_seconds": end, "text": text.strip(), "confidence": confidence})
     return segments
 
 
-def decode_with_nemo(model_path, audio_path):
+def decode_with_nemo(model_path, audio_path, duration=None):
     from nemo.collections.asr.models import ASRModel
     from omegaconf import open_dict
 
@@ -120,7 +178,8 @@ def decode_with_nemo(model_path, audio_path):
         model.cfg.decoding.preserve_alignments = True
         model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
     model.change_decoding_strategy(model.cfg.decoding, verbose=False)
-    return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0])
+    configure_nemo_confidence(model)
+    return extract_aligned_words(model.transcribe([str(audio_path)], timestamps=True)[0], duration)
 
 
 def build_candidate(duration, segments):
@@ -137,7 +196,7 @@ def build_candidate(duration, segments):
         if index == len(segments) - 1 and _finite(end) and duration < end <= duration + DECODER_FRAME_SECONDS:
             end = segment["end_seconds"] = duration
         if not isinstance(segment.get("text"), str) or not segment["text"].strip() or not all(_finite(value) for value in (start, end, confidence)) or start < 0 or end <= start or end > duration or not 0 <= confidence <= 1 or start < previous_start or end < previous_end:
-            raise ContractError("unaligned segment evidence")
+            raise AlignmentError("unaligned segment evidence")
         previous_start, previous_end = start, end
         evidence.append({"segment_index": index, "raw_confidence": confidence, "calibrated_confidence": confidence, "timestamp_start_seconds": start, "timestamp_end_seconds": end})
         if confidence < THRESHOLD:
@@ -159,7 +218,7 @@ def main():
     except ValueError:
         raise ContractError("output_json must remain inside the dedicated output root") from None
     verify_model(MODEL_PATH)
-    output_path.write_text(json.dumps(build_candidate(duration, decode_with_nemo(MODEL_PATH, audio_path)), separators=(",", ":")) + "\n")
+    output_path.write_text(json.dumps(build_candidate(duration, decode_with_nemo(MODEL_PATH, audio_path, duration)), separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":

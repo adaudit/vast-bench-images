@@ -16,12 +16,39 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION
+    from offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION, AlignmentError, ConfidenceMismatchError
 except ModuleNotFoundError:
-    from asr.offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION
+    from asr.offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION, AlignmentError, ConfidenceMismatchError
 
 MAX_AUDIO_BYTES = 512 * 1024 * 1024
 _DNS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="asr-dns")
+_FAILURE_LOG_LOCK = threading.Lock()
+
+
+class _ItemFailure(Exception):
+    def __init__(self, stage, reason):
+        self.stage, self.reason = stage, reason
+
+
+def _failure_details(error, stage):
+    if isinstance(error, _ItemFailure):
+        return error.stage, error.reason
+    if isinstance(error, MemoryError) or any(
+        cls.__name__ == "OutOfMemoryError" and cls.__module__.split(".")[0] == "torch"
+        for cls in type(error).__mro__
+    ):
+        return stage, "oom"
+    if stage == "download":
+        if isinstance(error, TimeoutError):
+            return stage, "download_deadline"
+        return stage, "download_rejected" if isinstance(error, ValueError) else "download_error"
+    if stage == "validate":
+        return stage, "receipt_mismatch"
+    if isinstance(error, ConfidenceMismatchError):
+        return "confidence", "confidence_mismatch"
+    if isinstance(error, AlignmentError):
+        return "alignment", "alignment_invalid"
+    return stage, "transcribe_error" if isinstance(error, (RuntimeError, ValueError, OSError)) else "unknown"
 
 
 def _https_request(url, output, *, body=None, limit=MAX_AUDIO_BYTES, deadline_seconds=180):
@@ -88,6 +115,10 @@ def _https_request(url, output, *, body=None, limit=MAX_AUDIO_BYTES, deadline_se
                 if size > limit: raise ValueError("audio too large")
                 destination.write(block)
         remaining()
+    except Exception:
+        if expired.is_set() or time.monotonic() >= deadline:
+            raise TimeoutError("audio deadline exceeded") from None
+        raise
     finally:
         timer.cancel()
         connection.close()
@@ -132,6 +163,12 @@ def batch_events(runtime, payload, *, fetcher=fetch_audio, refresher=refresh_aud
 
     def event(kind, **fields): return {"type": kind, "batch_id": batch_id, **fields}
 
+    def failure(index, error, stage):
+        stage, reason = _failure_details(error, stage)
+        with _FAILURE_LOG_LOCK:
+            print(f"ITEM_FAILED stage={stage} reason={reason}", flush=True)
+        return event("item", id=ids[index], status="failed", stage=stage, reason=reason)
+
     def fetch(index, directory):
         item, params = items[index], items[index]["params"]
         if item["lane"] != "parakeet_v3" or (params["model_id"], params["model_revision"], params["request_version"]) != (MODEL_ID, MODEL_REVISION, REQUEST_VERSION): raise ValueError("batch model identity mismatch")
@@ -140,13 +177,15 @@ def batch_events(runtime, payload, *, fetcher=fetch_audio, refresher=refresh_aud
         path = directory / (str(index) + ".wav")
         refresh = item.get("audio_refresh")
         url = refresher(refresh) if refresh and refresh.get("token") else item["audio_url"]
+        stage = "download"
         try:
             fetcher(url, path)
+            stage = "validate"
             validate_audio(path, params)
             return path
-        except Exception:
+        except Exception as error:
             path.unlink(missing_ok=True)
-            raise
+            raise _ItemFailure(*_failure_details(error, stage)) from None
 
     def infer(index, path):
         try:
@@ -154,8 +193,8 @@ def batch_events(runtime, payload, *, fetcher=fetch_audio, refresher=refresh_aud
             request = {key: params[key] for key in ("request_version", "model_id", "model_revision", "audio_duration_seconds")}
             request.update(lane="parakeet_v3", audio_filename="claimed.wav", audio_base64=base64.b64encode(path.read_bytes()).decode())
             return event("item", id=ids[index], status="succeeded", candidate=runtime.transcribe(request))
-        except Exception:
-            return event("item", id=ids[index], status="failed")
+        except Exception as error:
+            return failure(index, error, "transcribe")
         finally:
             path.unlink(missing_ok=True)
 
@@ -174,6 +213,6 @@ def batch_events(runtime, payload, *, fetcher=fetch_audio, refresher=refresh_aud
                         try:
                             path = future.result()
                             pending[lanes.submit(infer, index, path)] = ("inference", index)
-                        except Exception:
-                            yield event("item", id=ids[index], status="failed")
+                        except Exception as error:
+                            yield failure(index, error, "download")
     yield event("end")

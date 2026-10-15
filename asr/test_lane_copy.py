@@ -239,7 +239,7 @@ class LaneCopyTest(unittest.TestCase):
             barrier.wait(timeout=5)
             return [None for _ in files]
         def benchmark(model):
-            fixture.runtime._transcribe_many([SimpleNamespace(audio=b"test audio")], model=model)
+            fixture.runtime._transcribe_many([SimpleNamespace(audio=b"test audio", audio_duration_seconds=1)], model=model)
         with self.runtime(cuda=True, benchmark=benchmark) as fixture, patch.object(LaneModel, "transcribe", transcribe), patch.object(server, "extract_aligned_words", return_value=[]):
             fixture.runtime.initialize_once()
             self.assertTrue(fixture.runtime.ready)

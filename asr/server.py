@@ -12,13 +12,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
+    from offline_entrypoint import ContractError as ModelContractError
     from vast_adapter import ContractError, parse_request
     from parakeet_pool import ParakeetPool
     from startup import Stages, verify_extracted_model
     from batch_runtime import batch_events
 except ModuleNotFoundError:
-    from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from asr.offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
+    from asr.offline_entrypoint import ContractError as ModelContractError
     from asr.vast_adapter import ContractError, parse_request
     from asr.parakeet_pool import ParakeetPool
     from asr.startup import Stages, verify_extracted_model
@@ -148,6 +150,7 @@ class Runtime:
             # NeMo 2.4.1 rnnt_bpe_models.py:477-497 rebuilds decoding/WER
             # with this lane's decoder and joint, including fresh graph/confidence state.
             model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+            configure_nemo_confidence(model)
             model.eval()
             if device.type == "cuda":
                 stream = torch.cuda.Stream()
@@ -184,15 +187,19 @@ class Runtime:
                 audio.write(request.audio); audio.close(); files.append(audio.name)
             if borrowed:
                 model = self.pool.checkout()
+            def transcribe():
+                results = model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)
+                return [extract_aligned_words(result, request.audio_duration_seconds)
+                        for result, request in zip(results, requests, strict=True)]
             try:
                 LOGGER.info("parakeet_inference stage=start")
                 stream = self._streams.get(id(model))
                 if stream is None:
-                    segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)]
+                    segments = transcribe()
                 else:
                     import torch
                     with torch.cuda.stream(stream):
-                        segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)]
+                        segments = transcribe()
                 LOGGER.info("parakeet_inference stage=complete")
                 return segments
             finally:
@@ -286,7 +293,8 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                 LOGGER.info("parakeet_http status=400 category=contract")
                 self._send(400, {"error": "invalid request"})
             except ValueError as error:
-                LOGGER.info("parakeet_http status=400 category=%s", type(error).__name__)
+                category = "ContractError" if isinstance(error, ModelContractError) else type(error).__name__
+                LOGGER.info("parakeet_http status=400 category=%s", category)
                 self._send(400, {"error": "invalid request"})
             except Exception as error:
                 LOGGER.info("parakeet_http status=500 category=%s", type(error).__name__)
