@@ -227,30 +227,18 @@ jobs:
           BATCH_FIXTURE_URL: https://dldata-public.s3.us-east-2.amazonaws.com/2086-149220-0033.wav
         run: |
           set -euo pipefail
-          # The production runtime hard-fails without CUDA hardware (server.py deps
-          # stage, per-lane torch.cuda.Stream, torch.cuda.stream contexts). This CPU
-          # benchmark keeps every other line of production startup real -- ordered
-          # stages, manifest verification, three model lanes, per-lane benchmarks,
-          # readiness, and both /transcribe-batch envelopes -- by neutralizing only
-          # those three hardware guards via an entrypoint shim.
+          # Preserve real torch CUDA types and availability: replacing Stream with
+          # a function breaks Dynamo imports, and faking availability selects CUDA
+          # inside NeMo. Bypass only our production-only hardware requirement;
+          # the real loader and inference path naturally use CPU without streams.
           cat > "$RUNNER_TEMP/cpu-benchmark-shim.py" <<'SHIM'
-          """CPU benchmark harness: neutralize CUDA hardware guards, run the real server."""
-          import contextlib
-          import runpy
+          """CPU benchmark harness: bypass only the server's CUDA requirement."""
+          import server
 
-          import torch
-
-
-          class _CpuStream:
-              def synchronize(self):
-                  pass
-
-
-          torch.cuda.is_available = lambda: True
-          torch.cuda.Stream = lambda: _CpuStream()
-          torch.cuda.stream = lambda stream: contextlib.nullcontext()
-          print("cpu benchmark shim active: CUDA hardware guards neutralized", flush=True)
-          runpy.run_path("/workspace/server.py", run_name="__main__")
+          check_dependencies = server.Runtime._check_dependencies
+          server.Runtime._check_dependencies = lambda self: check_dependencies(self, require_cuda=False)
+          print("cpu benchmark shim active: server CUDA requirement bypassed", flush=True)
+          server.make_server().serve_forever()
           SHIM
           worker_dir="$(mktemp -d)"
           container="$(docker run --detach --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --entrypoint python3 -v "$RUNNER_TEMP/cpu-benchmark-shim.py:/workspace/cpu-benchmark-shim.py:ro" "$CPU_BENCHMARK_IMAGE" /workspace/cpu-benchmark-shim.py)"

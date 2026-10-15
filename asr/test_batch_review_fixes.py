@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+import contextlib
 from unittest.mock import patch
 from types import ModuleType, SimpleNamespace
 from pathlib import Path
@@ -22,6 +23,99 @@ from asr.startup import Stages
 
 
 class BatchReviewFixesTest(unittest.TestCase):
+    def test_extracted_loader_rebuilds_failed_lane_without_archive_or_cuda(self):
+        models, connectors, restores, resets = [], [], [], []
+        class Connector:
+            def __init__(self):
+                connectors.append(self)
+        def restore(path, *, save_restore_connector, map_location):
+            self.assertTrue(Path(path).is_dir())
+            self.assertEqual(save_restore_connector.model_extracted_dir, path)
+            self.assertEqual(map_location.type, "cpu")
+            self.assertFalse(archive.exists())
+            restores.append(path)
+            model = SimpleNamespace(cfg=SimpleNamespace(decoding=SimpleNamespace()), transcribe=lambda *_args, **_kwargs: [])
+            def configure(*_args, **_kwargs):
+                if len(models) == 1:
+                    raise RuntimeError("synthetic failed decoding setup")
+            model.change_decoding_strategy = configure
+            models.append(model)
+            return model
+        modules = {}
+        for name in ("nemo", "nemo.collections", "nemo.collections.asr", "nemo.collections.asr.models", "nemo.core", "nemo.core.connectors", "nemo.core.connectors.save_restore_connector", "omegaconf", "torch"):
+            modules[name] = ModuleType(name)
+        modules["nemo.collections.asr.models"].ASRModel = SimpleNamespace(restore_from=restore, _set_model_restore_state=lambda **kwargs: resets.append(kwargs))
+        modules["nemo.core.connectors.save_restore_connector"].SaveRestoreConnector = Connector
+        modules["omegaconf"].open_dict = lambda _: contextlib.nullcontext()
+        modules["torch"].device = lambda device: SimpleNamespace(type=device)
+        modules["torch"].cuda = SimpleNamespace(is_available=lambda: False, Stream=lambda: self.fail("CPU loading touched CUDA"))
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "absent.nemo"
+            extracted = archive.parent / "parakeet-v3"
+            extracted.mkdir()
+            (extracted / "model_config.yaml").write_text("config")
+            (extracted / "model_weights.ckpt").write_bytes(b"weights")
+            manifest = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in extracted.iterdir()}
+            (extracted / "sha256-manifest.json").write_text(json.dumps(manifest))
+            with patch.dict(sys.modules, modules), patch.object(server, "MODEL_PATH", archive), patch.object(server, "verify_model", side_effect=AssertionError("runtime touched archive")), patch.object(server.Runtime, "_check_dependencies"):
+                runtime = server.Runtime(stages=Stages(sleep=lambda _: None, log=lambda *_, **__: None), benchmark=lambda _: None)
+                runtime.initialize_once()
+            self.assertTrue(runtime.ready)
+            self.assertEqual(len(models), 4)
+            self.assertEqual(len(connectors), 4)
+            self.assertEqual(len({id(connector) for connector in connectors}), 4)
+            self.assertEqual(restores, [str(extracted)] * 4)
+            self.assertEqual(resets, [{"is_being_restored": False}])
+            self.assertEqual(runtime.pool.instances, models[1:])
+            self.assertNotIn(id(models[0]), runtime._streams)
+
+    def test_stage_failure_logs_only_class_and_fixed_reason(self):
+        output = io.StringIO()
+        stages = Stages(attempts=1, log=lambda line, **_: print(line, file=output))
+        def fail():
+            raise FileNotFoundError("/secret/model.nemo https://private.invalid/?token=hidden")
+        with self.assertRaisesRegex(RuntimeError, "startup stage exhausted"):
+            stages.run("lane_1", fail)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("error=FileNotFoundError reason=required_file_missing", lines[1])
+        self.assertNotIn("secret", output.getvalue())
+        self.assertNotIn("https", output.getvalue())
+        self.assertNotIn("hidden", output.getvalue())
+
+    def test_cpu_benchmark_shim_preserves_torch_cuda_types_and_availability(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/publish-asr-v3.yml").read_text()
+        shim = workflow.split('cat > "$RUNNER_TEMP/cpu-benchmark-shim.py" <<\'SHIM\'\n', 1)[1].split("          SHIM", 1)[0]
+        import textwrap
+        torch = ModuleType("torch")
+        stream_type = type("Stream", (), {})
+        available = lambda: False
+        torch.cuda = SimpleNamespace(is_available=available, Stream=stream_type, stream=contextlib.nullcontext)
+        checks = []
+        class Runtime:
+            def _check_dependencies(self, *, require_cuda=True):
+                checks.append(require_cuda)
+        fake_server = ModuleType("server")
+        fake_server.Runtime = Runtime
+        fake_server.make_server = lambda: SimpleNamespace(serve_forever=lambda: Runtime()._check_dependencies())
+        with patch.dict(sys.modules, {"torch": torch, "server": fake_server}), patch("runpy.run_path", side_effect=lambda *_args, **_kwargs: Runtime()._check_dependencies()), contextlib.redirect_stdout(io.StringIO()):
+            exec(textwrap.dedent(shim), {})
+        self.assertIs(torch.cuda.Stream, stream_type)
+        self.assertIs(torch.cuda.is_available, available)
+        self.assertEqual(checks, [False])
+
+    def test_cpu_benchmark_bypasses_only_hardware_requirement(self):
+        torch = ModuleType("torch")
+        torch.cuda = SimpleNamespace(is_available=lambda: False)
+        runtime = server.Runtime()
+        with patch.dict(sys.modules, {"torch": torch}), patch("importlib.metadata.version", return_value="2.4.1"), patch.object(server.logging, "disable"):
+            with self.assertRaisesRegex(RuntimeError, "CUDA unavailable"):
+                runtime._check_dependencies()
+            runtime._check_dependencies(require_cuda=False)
+        with patch.dict(sys.modules, {"torch": torch}), patch("importlib.metadata.version", return_value="unexpected"), patch.object(server.logging, "disable"):
+            with self.assertRaisesRegex(RuntimeError, "unexpected NeMo version"):
+                runtime._check_dependencies(require_cuda=False)
+
     def test_extract_model_skip_flag_skips_only_nemo_connector_check(self):
         with patch.object(sys, "path", [str(Path(__file__).parent), *sys.path]):
             import extract_model as extractor

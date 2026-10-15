@@ -34,7 +34,7 @@ class Runtime:
     def __init__(self, *, model_verifier=None, model_loader=None, transcriber=None, batch_transcriber=None, instance_count=3, stages=None, benchmark=None):
         if instance_count != 3 or os.environ.get("PARAKEET_INSTANCES", "3") != "3":
             raise ValueError("PARAKEET_INSTANCES must be exactly 3")
-        self.model_verifier = model_verifier or (lambda path: verify_extracted_model() if Path("/workspace/models/parakeet-v3").is_dir() else verify_model(path))
+        self.model_verifier = model_verifier or (lambda path: verify_extracted_model(path.parent / "parakeet-v3") if (path.parent / "parakeet-v3").is_dir() else verify_model(path))
         self._production = model_loader is None
         self.stages = stages or Stages(os.environ.get("ASR_STARTUP_MARKER_DIR", "/tmp/asr-startup-markers") if self._production else None)
         self.benchmark = benchmark or (self._benchmark if self._production else lambda model: None)
@@ -105,30 +105,38 @@ class Runtime:
         from omegaconf import open_dict
         from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
         import torch
-        extracted = "/workspace/models/parakeet-v3"
-        connector = SaveRestoreConnector()
-        connector.model_extracted_dir = extracted
-        if Path(extracted).is_dir():
-            model = ASRModel.restore_from(extracted, save_restore_connector=connector)
-        else:
-            # The separate non-serverless v3 image retains its archive layout.
-            model = ASRModel.restore_from(str(MODEL_PATH))
-        self._streams[id(model)] = torch.cuda.Stream()
-        with open_dict(model.cfg.decoding):
-            model.cfg.decoding.compute_timestamps = True
-            model.cfg.decoding.preserve_alignments = True
-            model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
-        model.change_decoding_strategy(model.cfg.decoding, verbose=False)
-        return model
+        extracted = MODEL_PATH.parent / "parakeet-v3"
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            if extracted.is_dir():
+                connector = SaveRestoreConnector()
+                connector.model_extracted_dir = str(extracted)
+                model = ASRModel.restore_from(str(extracted), save_restore_connector=connector, map_location=device)
+            else:
+                # The separate non-serverless v3 image retains its archive layout.
+                model = ASRModel.restore_from(str(MODEL_PATH), map_location=device)
+            with open_dict(model.cfg.decoding):
+                model.cfg.decoding.compute_timestamps = True
+                model.cfg.decoding.preserve_alignments = True
+                model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
+            model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+            if device.type == "cuda":
+                self._streams[id(model)] = torch.cuda.Stream()
+            return model
+        except Exception:
+            # NeMo clears this global flag only after a successful restore.
+            # Failed attempts must not contaminate the next fresh model/connector.
+            ASRModel._set_model_restore_state(is_being_restored=False)
+            raise
 
-    def _check_dependencies(self):
+    def _check_dependencies(self, *, require_cuda=True):
         if self._production:
             logging.disable(logging.CRITICAL)
             import importlib.metadata
             if importlib.metadata.version("nemo_toolkit") != "2.4.1":
                 raise RuntimeError("unexpected NeMo version")
             import torch
-            if not torch.cuda.is_available():
+            if require_cuda and not torch.cuda.is_available():
                 raise RuntimeError("CUDA unavailable")
 
     def _benchmark(self, model):
@@ -149,7 +157,7 @@ class Runtime:
                 LOGGER.info("parakeet_inference stage=start")
                 stream = self._streams.get(id(model))
                 if stream is None:
-                    segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+                    segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)]
                 else:
                     import torch
                     with torch.cuda.stream(stream):

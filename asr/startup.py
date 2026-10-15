@@ -24,9 +24,17 @@ class Stages:
             self.log(f"{stamp} STAGE {name} start elapsed_ms=0", flush=True)
             try:
                 result = action()
-            except Exception:
+            except Exception as exc:
                 elapsed = round((time.monotonic() - started) * 1000)
-                self.log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=retry", flush=True)
+                # Fixed reason codes only: exception text may contain credentials,
+                # URLs, or sensitive absolute paths.
+                reason = next((reason for cls, reason in (
+                    (FileNotFoundError, "required_file_missing"),
+                    (ImportError, "dependency_import_failed"),
+                    (AssertionError, "invariant_failed"),
+                    (ValueError, "invalid_configuration"),
+                ) if isinstance(exc, cls)), "operation_failed")
+                self.log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=retry error={type(exc).__name__} reason={reason}", flush=True)
                 if attempt + 1 == self.attempts:
                     raise RuntimeError("startup stage exhausted") from None
                 self.sleep(min(2 ** attempt, 8))
