@@ -89,11 +89,12 @@ class BatchReviewFixesTest(unittest.TestCase):
             self.assertEqual(map_location.type, "cpu")
             self.assertFalse(archive.exists())
             restores.append(path)
-            model = SimpleNamespace(cfg=SimpleNamespace(decoding=SimpleNamespace()), transcribe=lambda *_args, **_kwargs: [])
+            model = SimpleNamespace(cfg=SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True))), transcribe=lambda *_args, **_kwargs: [])
             def configure(*_args, **_kwargs):
                 if len(models) == 1:
                     raise RuntimeError("synthetic failed decoding setup")
             model.change_decoding_strategy = configure
+            model.eval = lambda: model
             models.append(model)
             return model
         modules = {}
@@ -116,12 +117,13 @@ class BatchReviewFixesTest(unittest.TestCase):
                 runtime = server.Runtime(stages=Stages(sleep=lambda _: None, log=lambda *_, **__: None), benchmark=lambda _: None)
                 runtime.initialize_once()
             self.assertTrue(runtime.ready)
-            self.assertEqual(len(models), 4)
-            self.assertEqual(len(connectors), 4)
-            self.assertEqual(len({id(connector) for connector in connectors}), 4)
-            self.assertEqual(restores, [str(extracted)] * 4)
+            self.assertEqual(len(models), 2)
+            self.assertEqual(len(connectors), 2)
+            self.assertEqual(len({id(connector) for connector in connectors}), 2)
+            self.assertEqual(restores, [str(extracted)] * 2)
             self.assertEqual(resets, [{"is_being_restored": False}])
-            self.assertEqual(runtime.pool.instances, models[1:])
+            self.assertIs(runtime.pool.instances[0], models[1])
+            self.assertEqual(len({id(model.cfg.decoding) for model in runtime.pool.instances}), 3)
             self.assertNotIn(id(models[0]), runtime._streams)
 
     def test_stage_failure_logs_only_class_and_fixed_reason(self):
@@ -206,7 +208,7 @@ class BatchReviewFixesTest(unittest.TestCase):
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=loader, benchmark=benchmark, stages=Stages(sleep=lambda _: None, log=lambda *_, **__: None))
         runtime.initialize_once()
         self.assertTrue(runtime.ready)
-        self.assertEqual(calls, [1, 1, 2, 3])
+        self.assertCountEqual(calls, [1, 1, 2, 3])
 
     def test_broken_third_lane_never_writes_ready_marker(self):
         models = []

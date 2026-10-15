@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +13,14 @@ class Stages:
         self.marker_dir = Path(marker_dir) if marker_dir else None
         self.attempts, self.sleep, self.log = attempts, sleep, log
         self.completed = {}
+        self._log_lock = threading.Lock()
         if self.marker_dir:
             self.marker_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log(self, message, **kwargs):
+        # Keep each STAGE line intact while independent benchmark actions overlap.
+        with self._log_lock:
+            self.log(message, **kwargs)
 
     def run(self, name, action):
         if name in self.completed:
@@ -21,7 +28,7 @@ class Stages:
         for attempt in range(self.attempts):
             started = time.monotonic()
             stamp = datetime.now(timezone.utc).isoformat()
-            self.log(f"{stamp} STAGE {name} start elapsed_ms=0", flush=True)
+            self._log(f"{stamp} STAGE {name} start elapsed_ms=0", flush=True)
             try:
                 result = action()
             except Exception as exc:
@@ -34,7 +41,7 @@ class Stages:
                     (AssertionError, "invariant_failed"),
                     (ValueError, "invalid_configuration"),
                 ) if isinstance(exc, cls)), "operation_failed")
-                self.log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=retry error={type(exc).__name__} reason={reason}", flush=True)
+                self._log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=retry error={type(exc).__name__} reason={reason}", flush=True)
                 if attempt + 1 == self.attempts:
                     raise RuntimeError("startup stage exhausted") from None
                 self.sleep(min(2 ** attempt, 8))
@@ -46,7 +53,7 @@ class Stages:
                 temporary = marker.with_suffix(".tmp")
                 temporary.write_text(json.dumps({"pid": os.getpid(), "elapsed_ms": elapsed}) + "\n")
                 temporary.replace(marker)
-            self.log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=ok", flush=True)
+            self._log(f"{datetime.now(timezone.utc).isoformat()} STAGE {name} end elapsed_ms={elapsed} status=ok", flush=True)
             return result
         raise AssertionError("unreachable")
 

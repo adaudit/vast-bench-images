@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Minimal HTTP boundary for the immutable Parakeet-v3 candidate."""
+import copy
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import threading
 import base64
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
@@ -74,8 +76,13 @@ class Runtime:
                 raise ValueError("model lanes are unusable")
             self.pool = pool
             self.model = pool.instances[0]
-            for index, model in enumerate(pool.instances):
-                self.stages.run(f"benchmark_{index + 1}", lambda model=model: self.benchmark(model))
+            with ThreadPoolExecutor(max_workers=self.instance_count) as executor:
+                benchmarks = [
+                    executor.submit(self.stages.run, f"benchmark_{index + 1}", lambda model=model: self.benchmark(model))
+                    for index, model in enumerate(pool.instances)
+                ]
+                for benchmark in benchmarks:
+                    benchmark.result()
             self.stages.run("ready", lambda: None)
         except Exception:
             print("ASR_STARTUP_FAILED", flush=True)
@@ -105,28 +112,42 @@ class Runtime:
         from omegaconf import open_dict
         from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
         import torch
-        extracted = MODEL_PATH.parent / "parakeet-v3"
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         try:
-            if extracted.is_dir():
-                connector = SaveRestoreConnector()
-                connector.model_extracted_dir = str(extracted)
-                model = ASRModel.restore_from(str(extracted), save_restore_connector=connector, map_location=device)
+            if self._lanes:
+                # Copy only the evaluated, unbenchmarked lane: no captured graphs
+                # or inference buffers exist yet (NeMo 2.4.1 tdt_label_looping.py:252-257).
+                model = copy.deepcopy(self._lanes[0])
             else:
-                # The separate non-serverless v3 image retains its archive layout.
-                model = ASRModel.restore_from(str(MODEL_PATH), map_location=device)
+                extracted = MODEL_PATH.parent / "parakeet-v3"
+                if extracted.is_dir():
+                    connector = SaveRestoreConnector()
+                    connector.model_extracted_dir = str(extracted)
+                    model = ASRModel.restore_from(str(extracted), save_restore_connector=connector, map_location=device)
+                else:
+                    # The separate non-serverless v3 image retains its archive layout.
+                    model = ASRModel.restore_from(str(MODEL_PATH), map_location=device)
             with open_dict(model.cfg.decoding):
                 model.cfg.decoding.compute_timestamps = True
                 model.cfg.decoding.preserve_alignments = True
                 model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
+            # CUDA permits only one capture per process. NeMo also rebuilds the
+            # decoder on timestamps=True, so keep graphs off for concurrent lanes.
+            with open_dict(model.cfg.decoding.greedy):
+                model.cfg.decoding.greedy.use_cuda_graph_decoder = False
+            # NeMo 2.4.1 rnnt_bpe_models.py:477-497 rebuilds decoding/WER
+            # with this lane's decoder and joint, including fresh graph/confidence state.
             model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+            model.eval()
             if device.type == "cuda":
-                self._streams[id(model)] = torch.cuda.Stream()
+                stream = torch.cuda.Stream()
+                stream.wait_stream(torch.cuda.current_stream())
+                self._streams[id(model)] = stream
             return model
         except Exception:
-            # NeMo clears this global flag only after a successful restore.
-            # Failed attempts must not contaminate the next fresh model/connector.
-            ASRModel._set_model_restore_state(is_being_restored=False)
+            if not self._lanes:
+                # NeMo clears this global flag only after a successful restore.
+                ASRModel._set_model_restore_state(is_being_restored=False)
             raise
 
     def _check_dependencies(self, *, require_cuda=True):
