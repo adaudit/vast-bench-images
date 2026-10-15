@@ -25,13 +25,29 @@ class Parameter:
 
 
 class LaneModel:
-    def __init__(self):
-        self.cfg = SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True)))
+    def __init__(self, cfg=None, trainer=None):
+        self.cfg = cfg if cfg is not None else SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True)))
         self.decoder = SimpleNamespace(weight=Parameter(1), buffer=Parameter(2))
         self.joint = SimpleNamespace(weight=Parameter(3), buffer=Parameter(4))
         self.training = True
         self.decoding = None
         self.configure_calls = 0
+
+    def __deepcopy__(self, memo):
+        raise NotImplementedError("NeMo-like objects cannot be deep-copied")
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def state_dict(self):
+        return {f"{module}.{name}": getattr(getattr(self, module), name).data
+                for module in ("decoder", "joint") for name in ("weight", "buffer")}
+
+    def load_state_dict(self, state, *, strict):
+        for key, value in state.items():
+            module, name = key.split(".")
+            getattr(getattr(self, module), name).data[:] = value
 
     def eval(self):
         self.training = False
@@ -135,27 +151,56 @@ class LaneCopyTest(unittest.TestCase):
                 self.assertEqual(lane.cfg.decoding.confidence_cfg, {"preserve_word_confidence": True})
                 self.assertFalse(lane.cfg.decoding.greedy.use_cuda_graph_decoder)
                 self.assertFalse(computer.allow_cuda_graphs)
-            self.assertEqual([lane.configure_calls for lane in lanes], [1, 2, 2])
+            self.assertEqual([lane.configure_calls for lane in lanes], [1, 1, 1])
             self.assertEqual(len({id(runtime._streams[id(lane)]) for lane in lanes}), 3)
             self.assertTrue(all(stream.waits == [fixture.loading_stream] for stream in fixture.streams))
+
+    def test_archive_layout_keeps_independent_per_lane_restores(self):
+        with self.runtime() as fixture, patch.object(server.copy, "deepcopy", side_effect=AssertionError("archive layout must restore")):
+            fixture.extracted.rmdir()
+            fixture.runtime.initialize_once()
+            self.assertTrue(fixture.runtime.ready)
+            self.assertEqual(len(fixture.restores), 3)
+            self.assertEqual(len({id(lane) for lane in fixture.runtime.pool.instances}), 3)
+            for path, kwargs in fixture.restores:
+                self.assertEqual(path, str(fixture.extracted.parent / "absent.nemo"))
+                self.assertEqual(set(kwargs), {"map_location"})
 
     def test_failed_copy_retries_without_disk_restore(self):
         deepcopy = copy.deepcopy
         attempts = []
-        def flaky(model):
-            attempts.append(model)
+        def flaky(cfg):
+            attempts.append(cfg)
             if len(attempts) == 1:
                 raise RuntimeError("synthetic copy failure")
-            self.assertFalse(model.training)
-            return deepcopy(model)
+            return deepcopy(cfg)
         with self.runtime() as fixture, patch.object(server.copy, "deepcopy", side_effect=flaky):
             fixture.runtime.initialize_once()
             self.assertTrue(fixture.runtime.ready)
             self.assertEqual(len(fixture.restores), 1)
             self.assertEqual(len(attempts), 3)
-            self.assertTrue(all(model is fixture.runtime.model for model in attempts))
+            self.assertTrue(all(cfg is fixture.runtime.model.cfg for cfg in attempts))
             self.assertEqual(set(fixture.runtime.stages.completed), {
                 "deps", "model_files", "lane_1", "lane_2", "lane_3", "benchmark_1", "benchmark_2", "benchmark_3", "ready"})
+
+    def test_non_deepcopyable_model_constructor_retries_without_restore(self):
+        attempts = []
+        class NonCopyableModel(LaneModel):
+            def __init__(self, cfg=None, trainer=None):
+                if cfg is not None:
+                    attempts.append(cfg)
+                    if len(attempts) == 1:
+                        raise NotImplementedError("synthetic constructor failure")
+                super().__init__(cfg=cfg, trainer=trainer)
+        with self.assertRaises(NotImplementedError):
+            copy.deepcopy(NonCopyableModel())
+        with self.runtime(model_factory=NonCopyableModel) as fixture:
+            fixture.runtime.initialize_once()
+            self.assertTrue(fixture.runtime.ready)
+            self.assertEqual(len(fixture.restores), 1)
+            self.assertEqual(len(attempts), 3)
+            self.assertIsNot(attempts[0], attempts[1])
+            self.assertIsNot(attempts[1], fixture.runtime.model.cfg)
 
     def test_failed_copy_configuration_retries_copy_not_restore(self):
         configure = LaneModel.change_decoding_strategy
@@ -235,12 +280,12 @@ class LaneCopyTest(unittest.TestCase):
         except ImportError:
             self.skipTest("real PyTorch check runs in the tensor-enabled test environment")
         class TorchModel(torch.nn.Module):
-            def __init__(self):
+            def __init__(self, cfg=None, trainer=None):
                 super().__init__()
                 self.decoder = torch.nn.LSTM(2, 2)
                 self.joint = torch.nn.Linear(2, 2)
                 self.register_buffer("running", torch.ones(2))
-                self.cfg = SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True)))
+                self.cfg = cfg if cfg is not None else SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True)))
                 self.decoding = None
 
             change_decoding_strategy = LaneModel.change_decoding_strategy
@@ -255,6 +300,8 @@ class LaneCopyTest(unittest.TestCase):
             for tensors in zip(*(list(lane.parameters()) + list(lane.buffers()) for lane in lanes)):
                 self.assertEqual(len({tensor.data_ptr() for tensor in tensors}), 3)
                 before = [tensor.detach().clone() for tensor in tensors]
+                self.assertTrue(torch.equal(before[0], before[1]))
+                self.assertTrue(torch.equal(before[0], before[2]))
                 with torch.no_grad():
                     tensors[1].add_(10)
                 self.assertTrue(torch.equal(tensors[0], before[0]))

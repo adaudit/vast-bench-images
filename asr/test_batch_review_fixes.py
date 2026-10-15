@@ -80,6 +80,16 @@ class BatchReviewFixesTest(unittest.TestCase):
 
     def test_extracted_loader_rebuilds_failed_lane_without_archive_or_cuda(self):
         models, connectors, restores, resets = [], [], [], []
+        from asr.test_lane_copy import LaneModel
+        class Model(LaneModel):
+            def __init__(self, cfg=None, trainer=None):
+                super().__init__(cfg=cfg, trainer=trainer)
+                models.append(self)
+
+            def change_decoding_strategy(self, *args, **kwargs):
+                if len(models) == 1:
+                    raise RuntimeError("synthetic failed decoding setup")
+                return super().change_decoding_strategy(*args, **kwargs)
         class Connector:
             def __init__(self):
                 connectors.append(self)
@@ -89,14 +99,7 @@ class BatchReviewFixesTest(unittest.TestCase):
             self.assertEqual(map_location.type, "cpu")
             self.assertFalse(archive.exists())
             restores.append(path)
-            model = SimpleNamespace(cfg=SimpleNamespace(decoding=SimpleNamespace(greedy=SimpleNamespace(use_cuda_graph_decoder=True))), transcribe=lambda *_args, **_kwargs: [])
-            def configure(*_args, **_kwargs):
-                if len(models) == 1:
-                    raise RuntimeError("synthetic failed decoding setup")
-            model.change_decoding_strategy = configure
-            model.eval = lambda: model
-            models.append(model)
-            return model
+            return Model()
         modules = {}
         for name in ("nemo", "nemo.collections", "nemo.collections.asr", "nemo.collections.asr.models", "nemo.core", "nemo.core.connectors", "nemo.core.connectors.save_restore_connector", "omegaconf", "torch"):
             modules[name] = ModuleType(name)
@@ -117,11 +120,17 @@ class BatchReviewFixesTest(unittest.TestCase):
                 runtime = server.Runtime(stages=Stages(sleep=lambda _: None, log=lambda *_, **__: None), benchmark=lambda _: None)
                 runtime.initialize_once()
             self.assertTrue(runtime.ready)
-            self.assertEqual(len(models), 2)
+            self.assertEqual(len(models), 4)
             self.assertEqual(len(connectors), 2)
             self.assertEqual(len({id(connector) for connector in connectors}), 2)
             self.assertEqual(restores, [str(extracted)] * 2)
-            self.assertEqual(resets, [{"is_being_restored": False}])
+            self.assertEqual(resets, [
+                {"is_being_restored": False},
+                {"is_being_restored": True, "folder": str(extracted)},
+                {"is_being_restored": False},
+                {"is_being_restored": True, "folder": str(extracted)},
+                {"is_being_restored": False},
+            ])
             self.assertIs(runtime.pool.instances[0], models[1])
             self.assertEqual(len({id(model.cfg.decoding) for model in runtime.pool.instances}), 3)
             self.assertNotIn(id(models[0]), runtime._streams)

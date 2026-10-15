@@ -113,13 +113,23 @@ class Runtime:
         from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
         import torch
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        extracted = MODEL_PATH.parent / "parakeet-v3"
+        copy_lane = bool(self._lanes) and extracted.is_dir()
         try:
-            if self._lanes:
-                # Copy only the evaluated, unbenchmarked lane: no captured graphs
-                # or inference buffers exist yet (NeMo 2.4.1 tdt_label_looping.py:252-257).
-                model = copy.deepcopy(self._lanes[0])
+            if copy_lane:
+                source = self._lanes[0]
+                # Model objects are not pickle/deepcopy-safe. Rebuild modules
+                # from config; restored artifact paths point into the extracted dir.
+                cfg = copy.deepcopy(source.cfg)
+                try:
+                    # Skip training data setup and resolve any nemo: artifacts locally.
+                    ASRModel._set_model_restore_state(is_being_restored=True, folder=str(extracted))
+                    model = type(source)(cfg=cfg, trainer=None).to(device)
+                finally:
+                    ASRModel._set_model_restore_state(is_being_restored=False)
+                # Default assign=False copies into fresh parameter/buffer storage.
+                model.load_state_dict(source.state_dict(), strict=True)
             else:
-                extracted = MODEL_PATH.parent / "parakeet-v3"
                 if extracted.is_dir():
                     connector = SaveRestoreConnector()
                     connector.model_extracted_dir = str(extracted)
@@ -145,7 +155,7 @@ class Runtime:
                 self._streams[id(model)] = stream
             return model
         except Exception:
-            if not self._lanes:
+            if not copy_lane:
                 # NeMo clears this global flag only after a successful restore.
                 ASRModel._set_model_restore_state(is_being_restored=False)
             raise
