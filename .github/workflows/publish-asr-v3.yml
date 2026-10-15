@@ -45,7 +45,7 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          python3 -m unittest asr.test_hourly_batch asr.test_vast_adapter asr.test_vast_serverless_wrapper asr.test_vast_failure_guard asr.test_production_vast_batch asr.test_drain_worker asr.test_batch_review_fixes asr.test_lane_copy asr.test_tdt_evidence asr.test_batch_failure_reasons
+          python3 -m unittest asr.test_hourly_batch asr.test_vast_adapter asr.test_vast_serverless_wrapper asr.test_vast_failure_guard asr.test_production_vast_batch asr.test_drain_worker asr.test_batch_review_fixes asr.test_lane_copy asr.test_tdt_evidence asr.test_batch_failure_reasons asr.test_cpu_slicer asr.test_oom_cancellation asr.test_stream_cancel
       - name: Enable the containerd image store for zstd layers
         run: |
           set -euo pipefail

@@ -16,6 +16,7 @@ COPY asr/offline_entrypoint.py /workspace/offline_entrypoint.py
 COPY asr/vast_adapter.py /workspace/vast_adapter.py
 COPY asr/server.py /workspace/server.py
 COPY asr/parakeet_pool.py asr/startup.py asr/batch_runtime.py /workspace/
+COPY asr/inference_runtime.py /workspace/
 COPY asr/fixtures/audio/2086-149220-0033.wav /workspace/fixtures/2086-149220-0033.wav
 COPY asr/drain_worker.py /workspace/drain_worker.py
 COPY asr/schemas/asr-candidate-v2.schema.json /workspace/asr-candidate-v2.schema.json

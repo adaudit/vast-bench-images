@@ -1,5 +1,8 @@
 """Small, dependency-free adapter between Vast PyWorker and the v3 ASR core."""
 import base64
+import io
+import math
+import wave
 from dataclasses import dataclass
 
 try:
@@ -7,7 +10,7 @@ try:
 except ModuleNotFoundError:  # local test invocation keeps modules under asr/
     from asr.offline_entrypoint import LANE, MODEL_ID, MODEL_REVISION, REQUEST_VERSION
 
-CHUNK_SECONDS = 60.0
+CHUNK_SECONDS = 40.0
 OVERLAP_SECONDS = 1.0
 MAX_AUDIO_BYTES = 512 * 1024 * 1024
 
@@ -25,22 +28,73 @@ class Request:
 
 
 def chunk_ranges(duration, *, silence_points=()):
-    if duration <= CHUNK_SECONDS:
+    if duration <= CHUNK_SECONDS + OVERLAP_SECONDS:
         return ((0.0, duration),)
     chunks, start = [], 0.0
     while start < duration:
         if duration - start <= CHUNK_SECONDS + OVERLAP_SECONDS:
             chunks.append((start, duration))
             break
-        target = min(start + CHUNK_SECONDS, duration)
-        if target == duration:
-            chunks.append((start, duration))
-            break
-        nearby = [point for point in silence_points if start < point < duration and abs(point - target) <= CHUNK_SECONDS / 2]
-        boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else target
+        target = start + CHUNK_SECONDS
+        nearby = [point for point in silence_points if start + 20 <= point <= target]
+        boundary = max(nearby) if nearby else target
         chunks.append((start, min(duration, boundary + OVERLAP_SECONDS)))
-        start = max(start + 0.001, boundary - OVERLAP_SECONDS)
+        start = boundary
     return tuple(chunks)
+
+
+def validate_chunk_plan(plan, duration):
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= 86400:
+        raise ContractError("invalid chunk duration")
+    if not isinstance(plan, (list, tuple)) or not 0 < len(plan) <= 50000:
+        raise ContractError("invalid chunk plan")
+    result = []
+    previous_start, previous_end = -1.0, 0.0
+    for index, interval in enumerate(plan):
+        if not isinstance(interval, (list, tuple)) or len(interval) != 2:
+            raise ContractError("invalid chunk interval")
+        start, end = interval
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (start, end)):
+            raise ContractError("invalid chunk interval")
+        if (start < 0 or not start < end or end > duration + 1e-6 or end - start > 41 + 1e-6
+                or start <= previous_start or end <= previous_end or start > previous_end + 1e-6
+                or previous_end - start > OVERLAP_SECONDS + 1e-6
+                or round(end * 16000) <= round(start * 16000)
+                or round(end * 16000) - round(start * 16000) > 41 * 16000):
+            raise ContractError("invalid chunk coverage")
+        if index == 0 and start != 0:
+            raise ContractError("invalid chunk coverage")
+        result.append((float(start), float(end)))
+        previous_start, previous_end = start, end
+    if abs(result[-1][1] - duration) > 1e-6:
+        raise ContractError("incomplete chunk coverage")
+    result[-1] = (result[-1][0], float(duration))
+    return tuple(result)
+
+
+def slice_wav(audio_bytes, start, end):
+    """Port of the proven frame-aligned 16 kHz mono s16le CPU slicer."""
+    if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) for value in (start, end)) or not 0 <= start < end:
+        raise ContractError("WAV slice bounds are invalid")
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as source:
+            if (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype()) != (1, 2, 16000, "NONE"):
+                raise ContractError("audio must be 16 kHz mono s16le WAV")
+            first, last = round(start * 16000), round(end * 16000)
+            if not 0 <= first < last <= source.getnframes():
+                raise ContractError("WAV slice exceeds canonical audio")
+            source.setpos(first)
+            frames = source.readframes(last - first)
+            params = source.getparams()
+            if len(frames) != (last - first) * 2:
+                raise ContractError("incomplete WAV slice")
+    except (wave.Error, EOFError):
+        raise ContractError("audio must be a valid WAV payload") from None
+    output = io.BytesIO()
+    with wave.open(output, "wb") as destination:
+        destination.setparams(params)
+        destination.writeframes(frames)
+    return output.getvalue()
 
 
 def parse_request(payload):
@@ -65,15 +119,19 @@ def parse_request(payload):
 
 
 def batch_and_restitch(batch_segments, chunks):
-    """Restore absolute times while retaining deterministic call/chunk order."""
+    """Port of the proven overlap-owner dedupe with monotonic absolute times."""
     if len(batch_segments) != len(chunks):
         raise ContractError("batch result count must equal chunk count")
-    result, covered_end = [], -1.0
-    for segments, (offset, _) in zip(batch_segments, chunks):
+    result, covered_end, previous_start = [], -1.0, -1.0
+    for segments, (offset, _) in zip(batch_segments, chunks, strict=True):
+        ownership_cutoff = covered_end
         for segment in segments:
-            restored = {**segment, "start_seconds": segment["start_seconds"] + offset, "end_seconds": segment["end_seconds"] + offset}
-            if restored["end_seconds"] <= covered_end:
+            start, end = segment["start_seconds"] + offset, segment["end_seconds"] + offset
+            if end <= ownership_cutoff or (start + end) / 2 <= ownership_cutoff:
                 continue
-            result.append(restored)
-            covered_end = restored["end_seconds"]
+            start = max(start, ownership_cutoff, previous_start)
+            if end <= start:
+                continue
+            result.append({**segment, "start_seconds": start, "end_seconds": end})
+            covered_end, previous_start = end, start
     return result

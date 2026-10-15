@@ -36,6 +36,7 @@ COPY --from=deps /opt/venv /opt/venv
 COPY --from=model /workspace/models/parakeet-v3 /workspace/models/parakeet-v3
 COPY asr/offline_entrypoint.py asr/vast_adapter.py asr/server.py asr/parakeet_pool.py /workspace/
 COPY asr/startup.py asr/batch_runtime.py /workspace/
+COPY asr/inference_runtime.py /workspace/
 COPY asr/vast-pyworker.py /workspace/vast-pyworker/worker.py
 COPY asr/production_vast_batch.py asr/drain_worker.py asr/vast_adapter.py asr/offline_entrypoint.py asr/vast_failure_guard.py /workspace/vast-pyworker/
 COPY asr/fixtures/audio/2086-149220-0033.wav /workspace/fixtures/2086-149220-0033.wav

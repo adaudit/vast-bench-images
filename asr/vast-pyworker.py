@@ -1,5 +1,6 @@
 """Vast PyWorker proxy for the baked Parakeet HTTP server."""
 import base64
+import asyncio
 import hashlib
 import json
 import os
@@ -75,11 +76,41 @@ async def validated_response(client_request, model_response):
         # aiohttp's 64 KiB line limit. Go validates identity and candidate evidence
         # incrementally before each durable per-item completion.
         response = web.StreamResponse(status=model_response.status, headers={"Content-Type": "application/x-ndjson"})
-        await response.prepare(client_request)
-        async for chunk in model_response.content.iter_chunked(64 * 1024):
-            await response.write(chunk)
-        await response.write_eof()
-        return response
+        closed = False
+        def close_upstream():
+            nonlocal closed
+            if not closed:
+                closed = True
+                close = getattr(model_response, "close", None)
+                if callable(close):
+                    close()
+        owner = asyncio.current_task()
+        async def observe_disconnect():
+            while True:
+                if hasattr(client_request, "transport"):
+                    transport = client_request.transport
+                    if transport is None or transport.is_closing():
+                        close_upstream()
+                        owner.cancel()
+                        return
+                await asyncio.sleep(.025)
+        observer = asyncio.create_task(observe_disconnect())
+        try:
+            await response.prepare(client_request)
+            async for chunk in model_response.content.iter_chunked(64 * 1024):
+                if hasattr(client_request, "transport"):
+                    transport = client_request.transport
+                    if transport is None or transport.is_closing():
+                        raise ConnectionResetError("client disconnected")
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+        finally:
+            # On write failure or asyncio cancellation, close the upstream socket
+            # so the model server observes disconnect and cancels queued work.
+            close_upstream()
+            observer.cancel()
+            await asyncio.gather(observer, return_exceptions=True)
     body = await model_response.read()
     if model_response.status == 200:
         incoming = await client_request.json()

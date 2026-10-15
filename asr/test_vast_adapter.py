@@ -96,15 +96,15 @@ class VastAdapterTest(unittest.TestCase):
         self.assertEqual(request.chunks, ((0.0, 10.0),))
 
     def test_chunks_at_silence_and_restitches_in_original_order(self):
-        chunks = adapter.chunk_ranges(120.0, silence_points=(60.0,))
-        self.assertEqual(chunks, ((0.0, 61.0), (59.0, 120.0)))
+        chunks = adapter.chunk_ranges(80.0, silence_points=(40.0,))
+        self.assertEqual(chunks, ((0.0, 41.0), (40.0, 80.0)))
         result = adapter.batch_and_restitch(
             [[{"start_seconds": 0, "end_seconds": 1, "text": "first", "confidence": .9}],
              [{"start_seconds": 1, "end_seconds": 2, "text": "second", "confidence": .8}]],
             chunks,
         )
         self.assertEqual([segment["text"] for segment in result], ["first", "second"])
-        self.assertEqual([segment["start_seconds"] for segment in result], [0.0, 60.0])
+        self.assertEqual([segment["start_seconds"] for segment in result], [0.0, 41.0])
 
     def test_restitch_removes_a_segment_owned_by_the_prior_overlap(self):
         result = adapter.batch_and_restitch(

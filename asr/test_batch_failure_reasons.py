@@ -54,7 +54,10 @@ class BatchFailureReasonsTest(unittest.TestCase):
                 item = next(event for event in events if event['type'] == 'item')
                 self.assertEqual(item['status'], 'failed')
                 self.assertEqual((item['stage'], item['reason']), (stage, reason))
-                self.assertEqual(output.getvalue().splitlines(), [f'ITEM_FAILED stage={stage} reason={reason}'])
+                lines = output.getvalue().splitlines()
+                self.assertEqual([line for line in lines if line.startswith('ITEM_FAILED')], [f'ITEM_FAILED stage={stage} reason={reason}'])
+                self.assertEqual(len(lines), 2)
+                self.assertRegex(lines[-1], r'^BATCH_LANES max_concurrent=0 units=0 audio_s=0[.]000 wall_s=[0-9]+[.][0-9]{3}$')
                 self.assertNotIn('PRIVATE', json.dumps(events) + output.getvalue())
                 self.assertNotIn('private-capability', json.dumps(events) + output.getvalue())
                 self.assertNotIn('a' * 64, output.getvalue())
@@ -69,7 +72,8 @@ class BatchFailureReasonsTest(unittest.TestCase):
         self.assertEqual(item['status'], 'succeeded')
         self.assertNotIn('reason', item)
         self.assertNotIn('stage', item)
-        self.assertEqual(output.getvalue(), '')
+        self.assertNotIn('ITEM_FAILED', output.getvalue())
+        self.assertRegex(output.getvalue().strip(), r'^BATCH_LANES max_concurrent=0 units=0 audio_s=0[.]000 wall_s=[0-9]+[.][0-9]{3}$')
 
 
 if __name__ == '__main__':

@@ -76,8 +76,9 @@ class TDTEvidenceTest(unittest.TestCase):
         result = runtime._transcribe_many([request], model=model)
         self.assertEqual(result[0][0]['end_seconds'], 1)
         self.assertEqual(hypothesis.timestamp['word'][0]['end'], .98)
+        model.transcribe = lambda *_, **__: []
         with self.assertRaises(ValueError):
-            runtime._transcribe_many([request, request], model=model)
+            runtime._transcribe_many([request], model=model)
 
     def test_empty_and_mismatched_confidence_evidence_remain_strict(self):
         self.assertEqual(pin.extract_aligned_words(SimpleNamespace(timestamp={'word': []}, word_confidence=[]), 1), [])

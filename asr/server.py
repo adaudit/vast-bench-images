@@ -1,30 +1,39 @@
 #!/usr/bin/env python3
 """Minimal HTTP boundary for the immutable Parakeet-v3 candidate."""
 import copy
+from dataclasses import replace
+import gc
 import json
 import logging
 import os
+import select
+import socket
 import tempfile
 import threading
+import time
+from datetime import datetime, timezone
 import base64
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from types import SimpleNamespace
 
 try:
     from asr.offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
     from asr.offline_entrypoint import ContractError as ModelContractError
-    from asr.vast_adapter import ContractError, parse_request
+    from asr.vast_adapter import ContractError, parse_request, chunk_ranges, validate_chunk_plan, slice_wav, batch_and_restitch
     from asr.parakeet_pool import ParakeetPool
     from asr.startup import Stages, verify_extracted_model
     from asr.batch_runtime import batch_events
+    from asr.inference_runtime import ADMISSION, CHUNK_WORKERS, WorkCancelled, is_cuda_oom, emit_line
 except ModuleNotFoundError:
     from offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
     from offline_entrypoint import ContractError as ModelContractError
-    from vast_adapter import ContractError, parse_request
+    from vast_adapter import ContractError, parse_request, chunk_ranges, validate_chunk_plan, slice_wav, batch_and_restitch
     from parakeet_pool import ParakeetPool
     from startup import Stages, verify_extracted_model
     from batch_runtime import batch_events
+    from inference_runtime import ADMISSION, CHUNK_WORKERS, WorkCancelled, is_cuda_oom, emit_line
 
 
 LOGGER = logging.getLogger("parakeet.server")
@@ -178,7 +187,7 @@ class Runtime:
         payload = {"request_version": "parakeet-v3-offline-request-v1", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_filename": "benchmark.wav", "audio_duration_seconds": 7.435, "audio_base64": base64.b64encode(audio).decode()}
         build_candidate(7.435, self._transcribe_many([parse_request(payload)], model=model)[0])
 
-    def _transcribe_many(self, requests, model=None):
+    def _transcribe_once(self, requests, model=None, control=None):
         files = []
         borrowed = model is None
         try:
@@ -187,11 +196,21 @@ class Runtime:
                 audio.write(request.audio); audio.close(); files.append(audio.name)
             if borrowed:
                 model = self.pool.checkout()
+            started = None
+            stamp = None
             def transcribe():
-                results = model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)
-                return [extract_aligned_words(result, request.audio_duration_seconds)
-                        for result, request in zip(results, requests, strict=True)]
+                results = None
+                try:
+                    results = model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0, verbose=False)
+                    return [extract_aligned_words(result, request.audio_duration_seconds)
+                            for result, request in zip(results, requests, strict=True)]
+                finally:
+                    del results
             try:
+                if control is not None:
+                    control.unit_started()
+                started = time.monotonic()
+                stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
                 LOGGER.info("parakeet_inference stage=start")
                 stream = self._streams.get(id(model))
                 if stream is None:
@@ -208,24 +227,134 @@ class Runtime:
                     if stream is not None:
                         stream.synchronize()
                 finally:
-                    if borrowed:
-                        self.pool.checkin(model)
+                    try:
+                        decoding = getattr(getattr(model, "decoding", None), "decoding", None)
+                        computer = getattr(decoding, "decoding_computer", None)
+                        reset = getattr(computer, "reset_cuda_graphs_state", None)
+                        if callable(reset):
+                            reset()
+                    finally:
+                        if borrowed:
+                            self.pool.checkin(model)
+                        if started is not None:
+                            lane = next((index for index, old in enumerate(self._lanes, 1) if old is model), 1)
+                            seconds = sum(request.audio_duration_seconds for request in requests)
+                            emit_line(f"UNIT lane={lane} audio_ms={round(seconds * 1000)} "
+                                      f"wall_ms={round((time.monotonic() - started) * 1000)} start={stamp}")
+                            if control is not None:
+                                control.unit_finished(seconds)
         finally:
             for path in files:
                 try: __import__("os").unlink(path)
                 except FileNotFoundError: pass
 
-    def transcribe(self, payload):
-        return self.transcribe_batch([payload])[0]
+    @staticmethod
+    def _empty_cuda_cache():
+        try:
+            import torch
+        except ImportError:
+            return
+        empty_cache = getattr(torch.cuda, "empty_cache", None)
+        if callable(empty_cache) and torch.cuda.is_available():
+            gc.collect()
+            empty_cache()
 
-    def transcribe_batch(self, payloads):
+    def _attempt_transcription(self, requests, model, control):
+        try:
+            return self._transcribe_once(requests, model=model, control=control)
+        except Exception as error:
+            if not is_cuda_oom(error):
+                raise
+            # Release failed-forward tensors before cache cleanup or retry. No
+            # exception/traceback (which may contain recognized text) is retained.
+            error.__traceback__ = error.__context__ = error.__cause__ = None
+            return None
+
+    def _transcribe_unit(self, request, model, control, *, cleanup=False):
+        recovered = False
+        try:
+            with ADMISSION.enter(control=control):
+                result = self._attempt_transcription([request], model, control)
+                if result is not None:
+                    return result[0]
+            recovered = True
+            with ADMISSION.enter(exclusive=True, control=control):
+                self._empty_cuda_cache()
+                result = self._attempt_transcription([request], model, control)
+                if result is None:
+                    raise MemoryError("bounded inference memory exhausted")
+                return result[0]
+        finally:
+            if cleanup or recovered:
+                self._empty_cuda_cache()
+
+    def _transcribe_request(self, request, model, control):
+        plan = validate_chunk_plan(getattr(request, "chunks", chunk_ranges(request.audio_duration_seconds)),
+                                   request.audio_duration_seconds)
+        def run(interval):
+            if control is not None:
+                control.check()
+            start, end = interval
+            if len(plan) == 1 and start == 0 and end == request.audio_duration_seconds:
+                unit = request
+            else:
+                audio = slice_wav(request.audio, start, end)
+                unit = SimpleNamespace(audio=audio, audio_duration_seconds=(round(end * 16000) - round(start * 16000)) / 16000)
+            segments = self._transcribe_unit(unit, model, control, cleanup=len(plan) > 1)
+            return build_candidate(unit.audio_duration_seconds, segments)["segments"]
+        if len(plan) == 1:
+            return run(plan[0])
+        if model is not None:
+            results = [run(interval) for interval in plan]
+        else:
+            results = [None] * len(plan)
+            remaining = iter(enumerate(plan))
+            pending = {}
+            def submit():
+                if control is not None:
+                    control.check()
+                try:
+                    index, interval = next(remaining)
+                except StopIteration:
+                    return
+                pending[CHUNK_WORKERS.submit(run, interval)] = index
+            try:
+                for _ in range(min(3, len(plan))):
+                    submit()
+                while pending:
+                    if control is not None:
+                        control.check()
+                    done, _ = wait(pending, timeout=.05, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        index = pending.pop(future)
+                        results[index] = future.result()
+                        submit()
+            finally:
+                for future in pending:
+                    future.cancel()
+        canonical_plan = tuple((round(start * 16000) / 16000, round(end * 16000) / 16000) for start, end in plan)
+        return build_candidate(request.audio_duration_seconds, batch_and_restitch(results, canonical_plan))["segments"]
+
+    def _transcribe_many(self, requests, model=None, control=None):
+        return [self._transcribe_request(request, model, control) for request in requests]
+
+    def transcribe(self, payload):
+        return self.transcribe_with_control(payload, None)
+
+    def transcribe_with_control(self, payload, control, chunk_plan=None):
+        return self.transcribe_batch([payload], control=control, chunk_plans=[chunk_plan])[0]
+
+    def transcribe_batch(self, payloads, *, control=None, chunk_plans=None):
         if not self.ready:
             raise NotReadyError("runtime is not ready")
         requests = [parse_request(payload) for payload in payloads]
+        if chunk_plans is not None:
+            requests = [replace(request, chunks=validate_chunk_plan(plan, request.audio_duration_seconds)) if plan is not None else request
+                        for request, plan in zip(requests, chunk_plans, strict=True)]
         if not 0 < len(requests) <= 32: raise ContractError("batch is outside the permitted limit")
         if self.batch_transcriber: segments = self.batch_transcriber(requests)
         elif self.transcriber: segments = [self.transcriber(request) for request in requests]
-        else: segments = self._transcribe_many(requests)
+        else: segments = self._transcribe_many(requests, control=control)
         if len(segments) != len(requests): raise ContractError("batch result count must equal request count")
         return [build_candidate(request.audio_duration_seconds, item) for request, item in zip(requests, segments)]
 
@@ -262,23 +391,38 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
                     raise ContractError("request body is outside the permitted limit")
                 payload = json.loads(self.rfile.read(length))
                 if self.path == "/transcribe-batch" and "items" in payload:
-                    events = batch_events(runtime, payload)
+                    cancel = threading.Event()
+                    events = batch_events(runtime, payload, cancel_event=cancel)
                     # Validate the batch envelope before committing HTTP success.
                     first = next(events)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/x-ndjson")
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.close_connection = True
+                    stopped = threading.Event()
+                    def observe_disconnect():
+                        while not stopped.wait(.025):
+                            try:
+                                readable, _, _ = select.select([self.connection], [], [], 0)
+                                if readable and not self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT):
+                                    cancel.set()
+                                    return
+                            except (OSError, ValueError):
+                                cancel.set()
+                                return
+                    threading.Thread(target=observe_disconnect, daemon=True).start()
                     try:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/x-ndjson")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.close_connection = True
                         self.wfile.write(json.dumps(first, separators=(",", ":")).encode() + b"\n")
                         self.wfile.flush()
                         for event in events:
                             self.wfile.write(json.dumps(event, separators=(",", ":")).encode() + b"\n")
                             self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
+                    except OSError:
                         pass
                     finally:
+                        stopped.set()
+                        cancel.set()
                         events.close()
                     return
                 self._send(200, runtime.transcribe(payload) if self.path == "/transcribe" else runtime.transcribe_batch(payload["requests"]))

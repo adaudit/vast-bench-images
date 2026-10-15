@@ -2,10 +2,14 @@
 import hashlib
 import json
 import os
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from asr.inference_runtime import LOG_LOCK
+except ModuleNotFoundError:
+    from inference_runtime import LOG_LOCK
 
 
 class Stages:
@@ -13,7 +17,7 @@ class Stages:
         self.marker_dir = Path(marker_dir) if marker_dir else None
         self.attempts, self.sleep, self.log = attempts, sleep, log
         self.completed = {}
-        self._log_lock = threading.Lock()
+        self._log_lock = LOG_LOCK
         if self.marker_dir:
             self.marker_dir.mkdir(parents=True, exist_ok=True)
 
