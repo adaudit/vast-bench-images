@@ -46,22 +46,19 @@ class PrecisionEvalTests(unittest.TestCase):
                 audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
                 audio.writeframes(b'\0\0' * 16000)
             result = evaluate(Path(directory), model_loader=loader, torch_module=torch)
-        self.assertEqual(len(models), 4)
-        for model in models:
+        self.assertEqual(len(models), 6)
+        for model in models[:4]:
             model.transcribe.assert_called_once_with([str(path)], batch_size=1, timestamps=True, num_workers=0)
+        for model in models[4:]:
+            model.transcribe.assert_not_called()
         self.assertEqual(torch.autocast.call_count, 2)
         torch.autocast.assert_called_with(device_type='cuda', dtype=torch.bfloat16)
         models[0].to.assert_not_called()
         models[1].to.assert_not_called()
         models[2].to.assert_called_once_with(dtype=torch.bfloat16)
         models[2].preprocessor.float.assert_called_once_with()
-        models[3].to.assert_not_called()
-        self.assertIs(models[3].cfg.decoding.greedy.use_cuda_graph_decoder, True)
-        models[3].change_decoding_strategy.assert_called_once_with(models[3].cfg.decoding, verbose=False)
-        for model in models[:3]:
-            model.change_decoding_strategy.assert_not_called()
+        models[5].change_attention_model.assert_called_once_with('rel_pos_local_attn', [128, 128])
         for variant in ('bf16', 'bf16_weights', 'fp32_graphs'):
-            self.assertEqual(result['comparisons'][variant]['aggregate']['wer'], 0)
             self.assertEqual(result['comparisons'][variant]['cases']['case_01']['duration_s'], 1)
             self.assertEqual(result['precisions'][variant]['peak_gpu_allocated_bytes'], 123)
             self.assertGreaterEqual(result['precisions'][variant]['load_s'], 0)

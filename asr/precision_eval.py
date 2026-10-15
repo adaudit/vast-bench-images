@@ -17,7 +17,6 @@ only one model ever captures graphs. Its wall time includes first capture
 The bf16_word_count field denotes candidate word count for every comparison,
 including this fp32 graph control; fp32_word_count always denotes the reference.
 
-WER is exact Levenshtein over casefolded, punctuation-stripped aligned words.
 Timing/confidence compare only equal-word alignment pairs; coverage is reported.
 Timing thresholds require BOTH boundaries within threshold; mean drift averages
 absolute start AND end differences. Aggregates are word/boundary weighted.
@@ -32,6 +31,8 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import time
 import unicodedata
 import wave
@@ -122,6 +123,56 @@ def load_model():
     verify_extracted_model(extracted)
     return Runtime()._load_model().float()
 
+def _peak(frames, begin, end):
+    return max((abs(int.from_bytes(frames[i:i + 2], 'little', signed=True)) for i in range(begin, end, 2)), default=0)
+
+
+def _chunk_case(path, directory):
+    """Split into <=40s chunks: latest silence in [start+20,start+40] else hard cut; 1s overlap."""
+    with wave.open(str(path), 'rb') as audio:
+        rate, channels, width = audio.getframerate(), audio.getnchannels(), audio.getsampwidth()
+        frames = audio.readframes(audio.getnframes())
+    bytes_per_second = 2 * channels * rate
+    duration = len(frames) / bytes_per_second
+    boundaries, start = [0.0], 0.0
+    while start + 40 < duration:
+        window_start = int((start + 20) * bytes_per_second)
+        window_end = int((start + 40) * bytes_per_second)
+        step = int(0.2 * bytes_per_second)
+        cut = start + 40
+        for offset in range(window_start, window_end - step, step):
+            if _peak(frames, offset, offset + step) <= 250:
+                cut = offset / bytes_per_second
+        boundaries.append(cut)
+        start = max(cut - 1.0, start + 1.0)
+    boundaries.append(duration)
+    chunks = []
+    for index in range(len(boundaries) - 1):
+        begin, end = boundaries[index], boundaries[index + 1]
+        if end - begin <= 0.2:
+            continue
+        out = directory / f'{path.stem}_chunk{index:03d}.wav'
+        with wave.open(str(out), 'wb') as audio:
+            audio.setparams((channels, width, rate, 0, 'NONE', 'not compressed'))
+            audio.writeframes(frames[int(begin * bytes_per_second):int(end * bytes_per_second)])
+        chunks.append((begin, out))
+    return chunks
+
+
+def _transcribe_case(model, path, mode, scratch):
+    if mode != 'chunked':
+        return extract_aligned_words(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0])
+    words = []
+    for offset, chunk in _chunk_case(path, scratch):
+        for item in extract_aligned_words(model.transcribe([str(chunk)], batch_size=1, timestamps=True, num_workers=0)[0]):
+            words.append({**item, 'start_seconds': item['start_seconds'] + offset, 'end_seconds': item['end_seconds'] + offset})
+        chunk.unlink()
+    deduplicated = []
+    for item in words:
+        if any(previous['text'].casefold() == item['text'].casefold() and abs(previous['start_seconds'] - item['start_seconds']) < 1.0 for previous in deduplicated[-10:]):
+            continue
+        deduplicated.append(item)
+    return deduplicated
 
 def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
     if torch_module is None:
@@ -140,8 +191,10 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
             durations[path.stem] = audio.getnframes() / audio.getframerate()
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    long_cases = {case for case, duration in durations.items() if duration >= 900}
+    scratch = Path(tempfile.mkdtemp(prefix='bf16eval-chunks-'))
     outputs, precisions = {}, {}
-    for precision in ('fp32', 'bf16', 'bf16_weights', 'fp32_graphs'):
+    for precision in ('fp32', 'bf16', 'bf16_weights', 'fp32_graphs', 'fp32_chunked', 'fp32_local_attn'):
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
@@ -154,38 +207,56 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         elif precision == 'fp32_graphs':
             model.cfg.decoding.greedy.use_cuda_graph_decoder = True
             model.change_decoding_strategy(model.cfg.decoding, verbose=False)
+        elif precision == 'fp32_local_attn':
+            model.change_attention_model('rel_pos_local_attn', [128, 128])
         torch.cuda.synchronize()
         load_s = time.perf_counter() - started
         loaded_memory = torch.cuda.memory_allocated()
         outputs[precision] = {}
-        started = time.perf_counter()
+        selected = paths if not precision.endswith('chunked') and precision != 'fp32_local_attn' else [p for p in paths if p.stem in long_cases]
+        mode = 'chunked' if precision.endswith('chunked') else 'whole'
+        whole_started = time.perf_counter()
         with torch.inference_mode():
-            for path in paths:
+            for path in selected:
                 autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision in ('bf16', 'bf16_weights') else contextlib.nullcontext()
                 with autocast:
-                    words = extract_aligned_words(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0])
-                outputs[precision][path.stem] = words
+                    outputs[precision][path.stem] = _transcribe_case(model, path, mode, scratch)
+            whole_elapsed = time.perf_counter() - whole_started
+            chunk_elapsed = None
+            if precision == 'fp32_local_attn':
+                chunk_started = time.perf_counter()
+                outputs['fp32_local_attn_chunked'] = {}
+                for path in selected:
+                    outputs['fp32_local_attn_chunked'][path.stem] = _transcribe_case(model, path, 'chunked', scratch)
+                chunk_elapsed = time.perf_counter() - chunk_started
         torch.cuda.synchronize()
-        elapsed = time.perf_counter() - started
-        precisions[precision] = dict(load_s=load_s, transcribe_wall_s=elapsed,
-                                    realtime_factor=elapsed / sum(durations.values()),
+        audio_s = sum(durations[p.stem] for p in selected)
+        precisions[precision] = dict(load_s=load_s, transcribe_wall_s=whole_elapsed, mode=mode,
+                                    case_count=len(selected), audio_duration_s=audio_s,
+                                    realtime_factor=_divide(whole_elapsed, audio_s),
                                     loaded_gpu_allocated_bytes=loaded_memory,
                                     peak_gpu_allocated_bytes=torch.cuda.max_memory_allocated(),
                                     peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved())
-        del model, words
+        if chunk_elapsed is not None:
+            precisions['fp32_local_attn_chunked'] = {**precisions[precision], 'mode': 'chunked',
+                                                    'transcribe_wall_s': chunk_elapsed,
+                                                    'realtime_factor': _divide(chunk_elapsed, audio_s)}
+        del model
         gc.collect()
         torch.cuda.empty_cache()
+    shutil.rmtree(scratch, ignore_errors=True)
     comparisons = {}
-    for precision in ('bf16', 'bf16_weights', 'fp32_graphs'):
-        cases = {case: dict(duration_s=duration, **compare_words(outputs['fp32'][case], outputs[precision][case]))
-                 for case, duration in durations.items()}
+    for precision, reference in (('bf16', 'fp32'), ('bf16_weights', 'fp32'), ('fp32_graphs', 'fp32'),
+                                 ('fp32_local_attn', 'fp32'), ('fp32_local_attn_chunked', 'fp32_chunked')):
+        cases = {case: dict(duration_s=duration, **compare_words(outputs[reference][case], outputs[precision][case]))
+                 for case, duration in durations.items() if case in outputs[precision]}
         sums = {key: sum(case[key] for case in cases.values()) for key in (
             'fp32_word_count', 'bf16_word_count', 'edit_count', 'aligned_word_count',
             'within_50ms_count', 'within_100ms_count', 'timing_drift_sum_ms', 'confidence_diff_sum')}
         maxima = [case['max_timing_drift_ms'] for case in cases.values() if case['max_timing_drift_ms'] is not None]
         sums['max_timing_drift_ms'] = max(maxima) if maxima else None
         comparisons[precision] = dict(cases=cases, aggregate=dict(
-            case_count=len(cases), duration_s=sum(durations.values()), **_summarize(sums)))
+            case_count=len(cases), duration_s=sum(durations[c] for c in outputs[precision]), **_summarize(sums)))
     precisions['fp32_graphs']['transcribe_speedup_vs_fp32'] = _divide(
         precisions['fp32']['transcribe_wall_s'], precisions['fp32_graphs']['transcribe_wall_s'])
     return dict(comparisons=comparisons, precisions=precisions)
