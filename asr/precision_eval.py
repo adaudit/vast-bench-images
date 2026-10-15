@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Metrics-only Parakeet-v3 fp32/bf16 evaluation; no transcript serialization.
 
-Both passes restore the baked extracted model independently using server.Runtime's
-loader (identical confidence/timestamp settings, CUDA graphs disabled). bf16 uses
-CUDA autocast, NOT model.to(bfloat16): retain fp32 weights, frontend and sensitive
-reductions while lowering eligible matrix operations. This evaluates mixed bf16
-inference, not reduced weight storage. fp32 disables TF32 for a full precision
-reference. One file/batch, no warmup; wall time includes the first inference.
+All three passes independently restore the baked extracted model through
+server.Runtime's loader (identical timestamp/confidence settings, graphs off).
+bf16 uses CUDA autocast with fp32 weights/frontend. bf16_weights additionally
+casts model weights/buffers to bfloat16 after restore, then restores preprocessor
+buffers to fp32 for stable audio feature extraction; autocast bridges fp32
+features to eligible bf16 encoder/decoder operations. No fp32 weight master copy
+is retained. fp32 disables TF32. One file/batch, no warmup; wall time includes
+first inference. Load time includes dtype conversion; peak memory includes the
+initial fp32 restore, so loaded_gpu_allocated_bytes also reports post-cast memory.
 
 WER is exact Levenshtein over casefolded, punctuation-stripped aligned words.
 Timing/confidence compare only equal-word alignment pairs; coverage is reported.
@@ -132,20 +135,24 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     outputs, precisions = {}, {}
-    for precision in ('fp32', 'bf16'):
+    for precision in ('fp32', 'bf16', 'bf16_weights'):
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         started = time.perf_counter()
         model = model_loader()
+        if precision == 'bf16_weights':
+            model.to(dtype=torch.bfloat16)
+            model.preprocessor.float()
         torch.cuda.synchronize()
         load_s = time.perf_counter() - started
+        loaded_memory = torch.cuda.memory_allocated()
         outputs[precision] = {}
         started = time.perf_counter()
         with torch.inference_mode():
             for path in paths:
-                autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision == 'bf16' else contextlib.nullcontext()
+                autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision != 'fp32' else contextlib.nullcontext()
                 with autocast:
                     words = extract_aligned_words(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0])
                 outputs[precision][path.stem] = words
@@ -153,19 +160,24 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         elapsed = time.perf_counter() - started
         precisions[precision] = dict(load_s=load_s, transcribe_wall_s=elapsed,
                                     realtime_factor=elapsed / sum(durations.values()),
+                                    loaded_gpu_allocated_bytes=loaded_memory,
                                     peak_gpu_allocated_bytes=torch.cuda.max_memory_allocated(),
                                     peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved())
         del model, words
         gc.collect()
         torch.cuda.empty_cache()
-    cases = {case: dict(duration_s=duration, **compare_words(outputs['fp32'][case], outputs['bf16'][case]))
-             for case, duration in durations.items()}
-    sums = {key: sum(case[key] for case in cases.values()) for key in (
-        'fp32_word_count', 'bf16_word_count', 'edit_count', 'aligned_word_count',
-        'within_50ms_count', 'within_100ms_count', 'timing_drift_sum_ms', 'confidence_diff_sum')}
-    maxima = [case['max_timing_drift_ms'] for case in cases.values() if case['max_timing_drift_ms'] is not None]
-    sums['max_timing_drift_ms'] = max(maxima) if maxima else None
-    return dict(cases=cases, aggregate=dict(case_count=len(cases), duration_s=sum(durations.values()), **_summarize(sums)), precisions=precisions)
+    comparisons = {}
+    for precision in ('bf16', 'bf16_weights'):
+        cases = {case: dict(duration_s=duration, **compare_words(outputs['fp32'][case], outputs[precision][case]))
+                 for case, duration in durations.items()}
+        sums = {key: sum(case[key] for case in cases.values()) for key in (
+            'fp32_word_count', 'bf16_word_count', 'edit_count', 'aligned_word_count',
+            'within_50ms_count', 'within_100ms_count', 'timing_drift_sum_ms', 'confidence_diff_sum')}
+        maxima = [case['max_timing_drift_ms'] for case in cases.values() if case['max_timing_drift_ms'] is not None]
+        sums['max_timing_drift_ms'] = max(maxima) if maxima else None
+        comparisons[precision] = dict(cases=cases, aggregate=dict(
+            case_count=len(cases), duration_s=sum(durations.values()), **_summarize(sums)))
+    return dict(comparisons=comparisons, precisions=precisions)
 
 
 def main():

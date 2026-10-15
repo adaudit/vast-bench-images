@@ -26,10 +26,11 @@ class PrecisionEvalTests(unittest.TestCase):
         self.assertAlmostEqual(result['mean_confidence_diff'], .05)
         self.assertNotIn('private', json.dumps(result))
 
-    def test_mocked_model_runs_twice_with_server_transcribe_contract_and_no_text(self):
+    def test_mocked_model_runs_three_variants_with_server_contract_and_no_text(self):
         torch = MagicMock()
         torch.cuda.max_memory_allocated.return_value = 123
         torch.cuda.max_memory_reserved.return_value = 456
+        torch.cuda.memory_allocated.return_value = 100
         torch.cuda.is_available.return_value = True
         models = []
         def loader():
@@ -45,12 +46,21 @@ class PrecisionEvalTests(unittest.TestCase):
                 audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
                 audio.writeframes(b'\0\0' * 16000)
             result = evaluate(Path(directory), model_loader=loader, torch_module=torch)
-        self.assertEqual(len(models), 2)
+        self.assertEqual(len(models), 3)
         for model in models:
             model.transcribe.assert_called_once_with([str(path)], batch_size=1, timestamps=True, num_workers=0)
-        torch.autocast.assert_called_once_with(device_type='cuda', dtype=torch.bfloat16)
-        self.assertEqual(result['aggregate']['wer'], 0)
-        self.assertEqual(result['cases']['case_01']['duration_s'], 1)
+        self.assertEqual(torch.autocast.call_count, 2)
+        torch.autocast.assert_called_with(device_type='cuda', dtype=torch.bfloat16)
+        models[0].to.assert_not_called()
+        models[1].to.assert_not_called()
+        models[2].to.assert_called_once_with(dtype=torch.bfloat16)
+        models[2].preprocessor.float.assert_called_once_with()
+        for variant in ('bf16', 'bf16_weights'):
+            self.assertEqual(result['comparisons'][variant]['aggregate']['wer'], 0)
+            self.assertEqual(result['comparisons'][variant]['cases']['case_01']['duration_s'], 1)
+            self.assertEqual(result['precisions'][variant]['peak_gpu_allocated_bytes'], 123)
+            self.assertGreaterEqual(result['precisions'][variant]['load_s'], 0)
+            self.assertGreaterEqual(result['precisions'][variant]['realtime_factor'], 0)
         self.assertEqual(result['precisions']['fp32']['peak_gpu_allocated_bytes'], 123)
         self.assertNotIn('SECRET', json.dumps(result))
         self.assertNotIn(str(path), json.dumps(result))
