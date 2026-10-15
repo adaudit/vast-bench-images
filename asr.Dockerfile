@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/models \
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-COPY asr/worker.py asr/rp_handler.py ./
+COPY asr/worker.py asr/rp_handler.py asr/parakeet_pool.py ./
 COPY asr/bake_models.py ./
 RUN --mount=type=secret,id=hf_token,required=true \
     HF_TOKEN="$(cat /run/secrets/hf_token)" python3 bake_models.py && \
@@ -30,5 +30,7 @@ RUN --mount=type=secret,id=hf_token,required=true \
     python3 -c 'import torch; from nemo.collections.asr.models import ASRModel; print(torch.__version__)'
 
 ENV WORKSPACE_ROOT=/workspace \
-    PARAKEET_INSTANCES=3
+    PARAKEET_INSTANCES=3 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 CMD ["python3", "rp_handler.py"]

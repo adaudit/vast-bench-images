@@ -1,8 +1,5 @@
 """Small, dependency-free adapter between Vast PyWorker and the v3 ASR core."""
 import base64
-import io
-import struct
-import wave
 from dataclasses import dataclass
 
 try:
@@ -42,7 +39,7 @@ def chunk_ranges(duration, *, silence_points=()):
         nearby = [point for point in silence_points if start < point < duration and abs(point - target) <= CHUNK_SECONDS / 2]
         boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else target
         chunks.append((start, min(duration, boundary + OVERLAP_SECONDS)))
-        start = boundary
+        start = max(start + 0.001, boundary - OVERLAP_SECONDS)
     return tuple(chunks)
 
 
@@ -66,48 +63,17 @@ def parse_request(payload):
         raise ContractError("audio must be a bounded WAV payload")
     return Request(audio, filename, float(duration), chunk_ranges(float(duration)))
 
-def slice_wav(audio_bytes, start, end):
-    """Return a frame-aligned 16 kHz mono s16le WAV interval."""
-    if not 0 <= start <= end:
-        raise ContractError("WAV slice bounds are invalid")
-    try:
-        with wave.open(io.BytesIO(audio_bytes), "rb") as source:
-            if (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype()) != (1, struct.calcsize("<h"), 16000, "NONE"):
-                raise ContractError("audio must be 16 kHz mono s16le WAV")
-            frame_count = source.getnframes()
-            first_frame = min(frame_count, round(start * source.getframerate()))
-            last_frame = min(frame_count, round(end * source.getframerate()))
-            source.setpos(first_frame)
-            frames = source.readframes(max(0, last_frame - first_frame))
-            params = source.getparams()
-    except wave.Error as error:
-        raise ContractError("audio must be a valid WAV payload") from error
-    output = io.BytesIO()
-    with wave.open(output, "wb") as destination:
-        destination.setparams(params)
-        destination.writeframes(frames)
-    return output.getvalue()
-
 
 def batch_and_restitch(batch_segments, chunks):
-    """Restore absolute times while retaining deterministic call/chunk order.
-
-    Adjacent chunks overlap by OVERLAP_SECONDS, so the boundary word is decoded twice with
-    slightly different timing. A word from the next chunk is kept only when it begins after
-    the audio already covered (its midpoint lies beyond covered_end); its start is then clamped
-    to the covered end so starts and ends both stay monotonic, which the candidate contract requires.
-    """
+    """Restore absolute times while retaining deterministic call/chunk order."""
     if len(batch_segments) != len(chunks):
         raise ContractError("batch result count must equal chunk count")
-    result, covered_end, previous_start = [], -1.0, -1.0
+    result, covered_end = [], -1.0
     for segments, (offset, _) in zip(batch_segments, chunks):
         for segment in segments:
-            start, end = segment["start_seconds"] + offset, segment["end_seconds"] + offset
-            if end <= covered_end or (start + end) / 2 <= covered_end:
+            restored = {**segment, "start_seconds": segment["start_seconds"] + offset, "end_seconds": segment["end_seconds"] + offset}
+            if restored["end_seconds"] <= covered_end:
                 continue
-            start = max(start, covered_end, previous_start)
-            if end <= start:
-                continue
-            result.append({**segment, "start_seconds": start, "end_seconds": end})
-            covered_end, previous_start = end, start
+            result.append(restored)
+            covered_end = restored["end_seconds"]
     return result

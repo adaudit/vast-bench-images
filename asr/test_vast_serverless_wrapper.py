@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-from unittest import mock
 import unittest
 import urllib.request
 from urllib.error import HTTPError
@@ -37,25 +36,15 @@ class VastServerlessWrapperTest(unittest.TestCase):
         artifact = ROOT / "asr" / "fixtures" / "audio" / "2086-149220-0033.wav"
         return directory, {"VAST_BENCHMARK_ARTIFACT": str(artifact)}
 
-    def _validated_response(self, generator, payload, body, status=200, request_body=None):
+    def _validated_response(self, generator, payload, body):
         class Response:
             def __init__(self, **kwargs): self.kwargs = kwargs
         class Request:
-            async def json(self):
-                return {"auth_data": {}, "session_id": None, "payload": payload} if request_body is None else request_body
+            async def json(self): return payload
         class ModelResponse:
-            def __init__(self):
-                self.status, self.content_type, self.headers = status, "application/json", {"Content-Type": "application/json"}
+            status, content_type, headers = 200, "application/json", {"Content-Type": "application/json"}
             async def read(self): return body
-        fake = ModuleType("aiohttp")
-        fake.web = type("Web", (), {
-            "Response": Response,
-            "json_response": lambda value, status: Response(
-                body=json.dumps(value).encode(),
-                status=status,
-                content_type="application/json",
-            ),
-        })
+        fake = ModuleType("aiohttp"); fake.web = type("Web", (), {"Response": Response})
         previous = sys.modules.get("aiohttp"); sys.modules["aiohttp"] = fake
         try:
             return asyncio.run(generator(Request(), ModelResponse()))
@@ -78,7 +67,7 @@ class VastServerlessWrapperTest(unittest.TestCase):
             if previous is None: sys.modules.pop("vastai", None)
             else: sys.modules["vastai"] = previous
 
-    def test_worker_construction_allows_parallel_requests(self):
+    def test_worker_construction_has_one_serial_benchmark(self):
         captured = {}
 
         class BenchmarkConfig:
@@ -86,7 +75,9 @@ class VastServerlessWrapperTest(unittest.TestCase):
 
         class HandlerConfig:
             def __init__(self, **kwargs):
-                captured.setdefault("handlers", []).append(self)
+                if "benchmark_config" not in kwargs:
+                    raise TypeError("benchmark_config is required")
+                captured["handler"] = self
                 self.kwargs = kwargs
 
         class WorkerConfig:
@@ -107,18 +98,16 @@ class VastServerlessWrapperTest(unittest.TestCase):
         directory, additions = self._benchmark_env(); os.environ.update(additions)
         try:
             runpy.run_path(str(WORKER), run_name="__main__")
-            handler = next(handler for handler in captured["handlers"] if handler.kwargs["route"] == "/transcribe-batch")
-            payload = handler.kwargs["benchmark_config"].kwargs["generator"]()
+            payload = captured["handler"].kwargs["benchmark_config"].kwargs["generator"]()
         finally:
             directory.cleanup(); os.environ.clear(); os.environ.update(env)
             if previous is None: sys.modules.pop("vastai", None)
             else: sys.modules["vastai"] = previous
 
-        handler = handler.kwargs
+        handler = captured["handler"].kwargs
         benchmark = handler["benchmark_config"].kwargs
-        stats_handler = next(handler.kwargs for handler in captured["handlers"] if handler.kwargs["route"] == "/stats")
         self.assertTrue(captured["ran"])
-        self.assertTrue(handler["allow_parallel_requests"])
+        self.assertFalse(handler["allow_parallel_requests"])
         self.assertEqual(benchmark["runs"], 1)
         self.assertFalse(benchmark["do_warmup"])
         self.assertTrue(callable(handler["response_generator"]))
@@ -127,42 +116,14 @@ class VastServerlessWrapperTest(unittest.TestCase):
         self.assertEqual(set(request), {"request_version", "lane", "model_id", "model_revision", "audio_filename", "audio_duration_seconds", "audio_base64"})
         self.assertTrue(base64.b64decode(request["audio_base64"]).startswith(b"RIFF"))
         self.assertEqual(handler["workload_calculator"](payload), 1.0)
-        self.assertEqual(stats_handler["workload_calculator"]({}), 1.0)
-        self.assertTrue(stats_handler["allow_parallel_requests"])
-
-    def test_isolated_benchmark_payload_has_no_ambient_os_dependency(self):
-        probe = '''
-import json, runpy, sys, types
-fake = types.ModuleType("vastai")
-fake.BenchmarkConfig = lambda **kwargs: kwargs
-fake.HandlerConfig = lambda **kwargs: kwargs
-fake.LogActionConfig = lambda **kwargs: kwargs
-fake.WorkerConfig = lambda **kwargs: kwargs
-fake.Worker = lambda _: type("Worker", (), {"run": lambda self: None})()
-sys.modules["vastai"] = fake
-payload = runpy.run_path(sys.argv[1], run_name="not_main")["benchmark_payload"]()
-print(json.dumps({"requests": len(payload["requests"])}))
-'''
-        directory, additions = self._benchmark_env()
-        try:
-            result = subprocess.run(
-                [sys.executable, "-I", "-c", probe, str(WORKER)],
-                env={**os.environ, **additions},
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            directory.cleanup()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"requests": 1})
 
     def test_isolated_worker_imports_copied_validator_and_validates_responses(self):
         copied = ("production_vast_batch.py", "drain_worker.py", "vast_adapter.py", "offline_entrypoint.py", "vast_failure_guard.py")
         probe = '''
 import asyncio, json, runpy, sys, types
-captured = {"handlers": []}
+captured = {}
 class HandlerConfig:
-    def __init__(self, **kwargs): captured["handlers"].append(kwargs)
+    def __init__(self, **kwargs): captured["handler"] = kwargs
 class Worker:
     def __init__(self, config): pass
     def run(self): pass
@@ -174,11 +135,10 @@ fake.WorkerConfig = lambda **kwargs: kwargs
 fake.Worker = Worker
 sys.modules["vastai"] = fake
 runpy.run_path(sys.argv[1], run_name="__main__")
-captured["handler"] = next(handler for handler in captured["handlers"] if handler["route"] == "/transcribe-batch")
 request = {"audio_duration_seconds": 7.435}
 complete = [{"schema_version": "asr-candidate-v3", "disposition": "speech", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_duration_seconds": 7.435, "segments": [{"start_seconds": 0, "end_seconds": 1, "text": "fixture", "confidence": .9}], "selected_segment_indexes": [], "calibration": {"corpus_sha256": "0" * 64, "metric": "segment_brier_score", "threshold": .7, "decision_rule": "calibrated_confidence < threshold", "segment_evidence": [{"segment_index": 0, "raw_confidence": .9, "calibrated_confidence": .8, "timestamp_start_seconds": 0, "timestamp_end_seconds": 1}]}}]
 class Request:
-    async def json(self): return {"auth_data": {}, "session_id": None, "payload": {"requests": [request]}}
+    async def json(self): return {"requests": [request]}
 class ModelResponse:
     def __init__(self, body, status): self.body, self.status, self.content_type, self.headers = body, status, "application/json", {"Content-Type": "application/json"}
     async def read(self): return self.body
@@ -215,8 +175,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         )
         self.assertNotIn("ghcr.io/adaudit/vast-bench-asr@", dockerfile)
         self.assertIn("USER root", dockerfile)
-        self.assertNotIn("pip check", dockerfile)
-        self.assertIn("import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel", dockerfile)
+        self.assertIn("pip check", dockerfile)
+        self.assertIn('python -I -c "import vastai"', dockerfile)
         self.assertIn("COPY --chmod=0444 vendor/models/parakeet-tdt-0.6b-v3.nemo", dockerfile)
         self.assertNotIn("chmod 0444 /workspace/models", dockerfile)
         self.assertLess(dockerfile.index("COPY --chmod=0755 asr/vast-entrypoint.sh"), dockerfile.index("ENTRYPOINT"))
@@ -276,55 +236,6 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         self.assertEqual(json.loads(response.kwargs["body"]), body)
         with self.assertRaises(ValueError):
             self._validated_response(namespace["validated_response"], payload, b'[]')
-
-    def test_proxy_logs_non_200_benchmark_outcome(self):
-        namespace = self._load_worker("benchmark_proxy_logging")
-        with self.assertLogs("parakeet.pyworker", "ERROR") as logs:
-            response = self._validated_response(namespace["validated_response"], {"requests": []}, b"upstream rejected", status=502)
-        self.assertEqual(response.kwargs["status"], 502)
-        self.assertIn("method=POST route=/transcribe-batch status=502 body=upstream rejected", "\n".join(logs.output))
-
-    def test_validated_response_accepts_bare_payload(self):
-        namespace = self._load_worker("bare_payload_response_validation")
-        payload = {"requests": [{"audio_duration_seconds": 1.0}]}
-        body = json.dumps([{
-            "schema_version": "asr-candidate-v3",
-            "disposition": "no_speech",
-            "lane": "parakeet_v3",
-            "model_id": "nvidia/parakeet-tdt-0.6b-v3",
-            "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
-            "audio_duration_seconds": 1.0,
-            "segments": [],
-            "selected_segment_indexes": [],
-            "calibration": {
-                "corpus_sha256": "0" * 64,
-                "metric": "segment_brier_score",
-                "threshold": .7,
-                "decision_rule": "calibrated_confidence < threshold",
-                "segment_evidence": [],
-            },
-        }]).encode()
-        response = self._validated_response(
-            namespace["validated_response"],
-            payload,
-            body,
-            request_body=payload,
-        )
-        self.assertEqual(response.kwargs["status"], 200)
-
-    def test_validated_response_reports_malformed_envelope(self):
-        namespace = self._load_worker("malformed_envelope_response_validation")
-        response = self._validated_response(
-            namespace["validated_response"],
-            {"requests": []},
-            b"[]",
-            request_body={"auth_data": {}, "session_id": None, "payload": {}},
-        )
-        self.assertEqual(response.kwargs["status"], 500)
-        self.assertEqual(
-            json.loads(response.kwargs["body"]),
-            {"error": "pyworker envelope", "keys": ["auth_data", "session_id", "payload"]},
-        )
 
     def test_approved_benchmark_reaches_public_http_contract(self):
         directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
@@ -387,67 +298,7 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             release.set(); http.shutdown(); thread.join(); http.server_close()
 
-    def test_http_500_exposes_exception_reason_and_logs_traceback(self):
-        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
-        try:
-            payload = self._load_worker("server_error_benchmark")["benchmark_payload"]()
-        finally:
-            directory.cleanup(); os.environ.clear(); os.environ.update(env)
-        runtime = server.Runtime(
-            model_verifier=lambda _: None,
-            model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: []})(),
-            batch_transcriber=lambda _: (_ for _ in ()).throw(RuntimeError("transcription broke")),
-        )
-        runtime.initialize_once()
-        http = server.make_server(("127.0.0.1", 0), runtime)
-        thread = threading.Thread(target=http.serve_forever); thread.start()
-        try:
-            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
-            with self.assertLogs("parakeet.server", "ERROR") as logs:
-                status, body = self._http(request)
-        finally:
-            http.shutdown(); thread.join(); http.server_close()
-        self.assertEqual(body["error"], "internal error")
-        self.assertEqual(body["type"], "RuntimeError")
-        self.assertEqual(body["message"], "transcription broke")
-        self.assertIsInstance(body["reason"], str)
-        self.assertLessEqual(len(body["reason"]), 600)
-        self.assertIn("transcribe_batch", body["reason"])
-        self.assertIn("RuntimeError: transcription broke", "\n".join(logs.output))
-
-    def test_stats_returns_recent_runtime_timing(self):
-        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
-        try:
-            payload = self._load_worker("stats_benchmark")["benchmark_payload"]()
-        finally:
-            directory.cleanup(); os.environ.clear(); os.environ.update(env)
-
-        class Model:
-            def transcribe(self, paths, **_):
-                return [type("Hypothesis", (), {
-                    "timestamp": {
-                        "word": [{"word": "fixture", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
-                        "char": [{"char": ["fixture"], "start_offset": 0, "end_offset": 1}],
-                    },
-                    "token_confidence": [.9],
-                })() for _ in paths]
-
-        runtime = server.Runtime(model_verifier=lambda _: None, model_loader=Model)
-        runtime.initialize_once()
-        runtime.transcribe_batch(payload["requests"])
-        http = server.make_server(("127.0.0.1", 0), runtime)
-        thread = threading.Thread(target=http.serve_forever); thread.start()
-        try:
-            request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/stats", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-            status, body = self._http(request)
-        finally:
-            http.shutdown(); thread.join(); http.server_close()
-        self.assertEqual((status, body["lane_count"]), (200, 3))
-        self.assertGreaterEqual(body["max_concurrent_lanes"], 1)
-        recent = body["recent"][-1]
-        self.assertEqual(set(recent), {"lane_index", "chunk_count", "sub_batches", "audio_seconds", "gpu_seconds", "started_monotonic", "finished_monotonic", "max_concurrent_lanes"})
-        self.assertEqual(recent["chunk_count"], 1)
-    def test_http_terminal_failure_is_stable_and_exposes_error(self):
+    def test_http_terminal_failure_is_stable_and_sanitized(self):
         loads = []
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: loads.append(1) or (_ for _ in ()).throw(RuntimeError("/tmp/private-model")))
         http = server.make_server(("127.0.0.1", 0), runtime)
@@ -455,19 +306,14 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         try:
             while runtime.health()[0] != 503 or runtime.health()[1]["status"] != "failed":
                 pass
-            expected = (503, {"status": "failed", "cause": "initialization failed", "error": "/tmp/private-model"})
+            expected = (503, {"status": "failed", "cause": "initialization failed"})
             self.assertEqual(self._http(f"http://127.0.0.1:{http.server_port}/healthz"), expected)
             self.assertEqual(self._http(f"http://127.0.0.1:{http.server_port}/healthz"), expected)
-            self.assertEqual(len(loads), 1)
+            self.assertEqual(len(loads), 3)
         finally:
             http.shutdown(); thread.join(); http.server_close()
 
-    def test_http_logs_contract_reason_for_benchmark_without_word_timestamps(self):
-        directory, additions = self._benchmark_env(); env = os.environ.copy(); os.environ.update(additions)
-        try:
-            payload = self._load_worker("missing_word_timestamps_benchmark")["benchmark_payload"]()
-        finally:
-            directory.cleanup(); os.environ.clear(); os.environ.update(env)
+    def test_http_logs_sanitized_inference_stage_and_error_category(self):
         runtime = server.Runtime(
             model_verifier=lambda _: None,
             model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: [object()]})(),
@@ -476,26 +322,16 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         http = server.make_server(("127.0.0.1", 0), runtime)
         thread = threading.Thread(target=http.serve_forever); thread.start()
         try:
+            payload = {"requests": [{"request_version": "parakeet-v3-offline-request-v1", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_filename": "fixture.wav", "audio_duration_seconds": 1, "audio_base64": "UklGRg=="}]}
             request = urllib.request.Request(f"http://127.0.0.1:{http.server_port}/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
             with self.assertLogs("parakeet.server", "INFO") as logs:
-                status, body = self._http(request)
-                self.assertEqual(status, 400); self.assertEqual(body["error"], "invalid request"); self.assertIn("aligned word", body["reason"])
+                self.assertEqual(self._http(request), (400, {"error": "invalid request"}))
         finally:
             http.shutdown(); thread.join(); http.server_close()
         joined = "\n".join(logs.output)
-        self.assertIn("parakeet_http status=400 category=contract reason=model produced no aligned word evidence", joined)
-        self.assertIn("parakeet_batch request_count=1", joined)
-        self.assertIn("parakeet_inference result aligned_words=0 token_confidence_present=False hypothesis_type=object", joined)
+        self.assertIn("parakeet_inference stage=start", joined)
+        self.assertIn("parakeet_http status=400 category=ContractError", joined)
         self.assertNotIn("private audio", joined)
-
-    def test_configure_logging_configures_worker_stderr_once(self):
-        with mock.patch.object(server.logging, "basicConfig") as basic_config:
-            server.configure_logging()
-        basic_config.assert_called_once_with(
-            level=server.logging.INFO,
-            stream=server.sys.stderr,
-            format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        )
 
 
 if __name__ == "__main__":

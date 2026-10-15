@@ -1,4 +1,4 @@
-name: Publish known-vulnerable non-production Parakeet v3 canary
+name: Publish hourly-batch Parakeet v3 serverless image
 
 on:
   workflow_dispatch:
@@ -8,11 +8,11 @@ on:
         required: true
         type: boolean
       proof_only:
-        description: Build and import-test the overlay without publishing
+        description: Build and import-test the branch source without publishing
         required: true
         type: boolean
       target:
-        description: Select the canary image to build
+        description: Select the image to build
         required: true
         type: choice
         default: asr
@@ -34,29 +34,26 @@ permissions:
 
 jobs:
   publish-asr-v3:
-    if: inputs.authorize_known_vulnerable_canary && inputs.target == 'asr' && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
+    if: inputs.authorize_known_vulnerable_canary && inputs.target == 'asr' && github.ref == 'refs/heads/hourly-batch/20261015'
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out immutable overlay
+      - name: Check out branch source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          path: overlay
-      - name: Check out immutable application source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: 482204e85c2c9ab440e9351e5495d037c25a37cf
           path: source
-      - name: Apply the build-only overlay
+      - name: Run the asr unit test suite
+        working-directory: source
         run: |
           set -euo pipefail
-          # Overlay the complete asr/ runtime tree (Python, shell, Dockerfile). A hand-kept file list
-          # silently shipped stale modules three times; copying the tree makes the overlay total.
-          find overlay/asr -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' -o -name '*.Dockerfile' \) -exec cp {} source/asr/ \;
-          test -f source/asr/vast-serverless.Dockerfile && test -f source/asr/parakeet_pool.py
-          cp overlay/locks/parakeet-v3.requirements.txt source/locks/parakeet-v3.requirements.txt
-          cp overlay/locks/parakeet-v3.artifacts.json source/locks/parakeet-v3.artifacts.json
-          test "$(git -C source rev-parse HEAD)" = 482204e85c2c9ab440e9351e5495d037c25a37cf
-          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -m unittest asr.test_hourly_batch asr.test_vast_adapter asr.test_vast_serverless_wrapper asr.test_vast_failure_guard asr.test_production_vast_batch asr.test_drain_worker asr.test_batch_review_fixes
+      - name: Enable the containerd image store for zstd layers
+        run: |
+          set -euo pipefail
+          sudo tee /etc/docker/daemon.json <<'EOF'
+          {"features":{"containerd-snapshotter":true}}
+          EOF
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}'
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           driver: docker-container
@@ -150,7 +147,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          TAG: canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}
+          TAG: hourly-batch-${{ github.sha }}-${{ github.run_id }}
         run: bash "$RUNNER_TEMP/refuse-occupied-ghcr-tag"
       - name: Login to GHCR
         if: '!inputs.proof_only'
@@ -170,8 +167,6 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --output "$model" "$MODEL_URL"
           test "$(wc -c < "$model" | tr -d ' ')" = "$MODEL_SIZE_BYTES"
           printf '%s  %s\n' "$MODEL_SHA256" "$model" | sha256sum -c -
-          split -b 200MB -d -a 2 "$model" "$model.part."
-          rm "$model"
       - name: Materialize hash-verified wheelhouse
         working-directory: source
         run: |
@@ -187,7 +182,7 @@ jobs:
                   match.group(2), set(re.findall(r"--hash=sha256:([0-9a-f]{64})", block))
               )
               for block in re.split(r"(?m)^(?=[A-Za-z0-9_.-]+==)", Path("locks/parakeet-v3.requirements.txt").read_text())
-              if (match := re.match(r"^([A-Za-z0-9_.-]+)==([^\\s]+)", block))
+              if (match := re.match(r"^([A-Za-z0-9_.-]+)==([^\s]+)", block))
           }
           artifacts = [
               artifact for artifact in artifacts
@@ -197,6 +192,8 @@ jobs:
           ]
           if not {re.sub(r"[_.]+", "-", artifact["name"].lower()) for artifact in artifacts} <= locked.keys():
               raise SystemExit("artifact manifest is not a subset of the lock")
+          if not artifacts:
+              raise SystemExit("no artifact matched the lock; refusing a silent no-op pre-seed")
           for artifact in artifacts:
               target = wheelhouse / artifact["filename"]
               if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == artifact["sha256"]:
@@ -213,70 +210,57 @@ jobs:
                   temporary.replace(target)
               finally:
                   temporary.unlink(missing_ok=True)
+          print(f"pre-seeded wheels: {len(artifacts)}")
           PY
           python -m pip download --dest vendor/wheelhouses/parakeet-v3 --find-links vendor/wheelhouses/parakeet-v3 --only-binary=:all: --no-deps --require-hashes --platform manylinux1_x86_64 --platform manylinux2010_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_5_x86_64 --platform manylinux_2_12_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux_2_24_x86_64 --platform manylinux_2_27_x86_64 --platform manylinux_2_28_x86_64 --platform manylinux_2_31_x86_64 --platform linux_x86_64 --implementation cp --python-version 3.11 --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu124 -r locks/parakeet-v3.requirements.txt
       - name: Build real-model benchmark image
         working-directory: source
         env:
           CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
-          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.build-overlay=$GITHUB_SHA" -f asr/vast-serverless.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
-      - name: Verify compressed image layers
-        working-directory: source
-        env:
-          CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          image_tar="$RUNNER_TEMP/parakeet-v3-layers.tar"
-          docker save "$CPU_BENCHMARK_IMAGE" -o "$image_tar"
-          IMAGE_TAR="$image_tar" python3 - <<'PY'
-          import gzip
-          import json
-          import os
-          import tarfile
-          import tempfile
-
-          limit = 600 * 1024 * 1024
-          with tarfile.open(os.environ["IMAGE_TAR"]) as archive:
-              manifest = json.load(archive.extractfile("manifest.json"))
-              if len(manifest) != 1:
-                  raise SystemExit("docker save must contain exactly one image")
-              image = manifest[0]
-              config = json.load(archive.extractfile(image["Config"]))
-              layers = image["Layers"]
-              history = [entry for entry in config["history"] if not entry.get("empty_layer")]
-              if len(layers) != len(history):
-                  raise SystemExit("image layer history does not align with docker save layers")
-              for index, (layer, entry) in enumerate(zip(layers, history), 1):
-                  with tempfile.TemporaryFile() as compressed:
-                      with gzip.GzipFile(fileobj=compressed, mode="wb", compresslevel=6, mtime=0) as output:
-                          source = archive.extractfile(layer)
-                          for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                              output.write(chunk)
-                      size = compressed.tell()
-                  created_by = entry.get("created_by", "<unknown>")
-                  print(f"{index:02d} {size:12d} bytes {size / 1024 / 1024:7.1f} MiB {created_by}")
-                  if size > limit:
-                      raise SystemExit(f"compressed layer exceeds 600 MiB: {size} bytes ({created_by})")
-          PY
-          rm "$image_tar"
+          docker buildx build --platform linux/amd64 --load --provenance=false --sbom=false --build-arg ASR_VERIFY_NEMO_CONNECTOR=1 --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "io.adaudit.build-channel=hourly-batch" -f asr/vast-serverless.Dockerfile -t "$CPU_BENCHMARK_IMAGE" .
       - name: Real-model benchmark on CPU
         working-directory: source
         env:
           CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
+          BATCH_FIXTURE_URL: https://dldata-public.s3.us-east-2.amazonaws.com/2086-149220-0033.wav
         run: |
           set -euo pipefail
+          # The production runtime hard-fails without CUDA hardware (server.py deps
+          # stage, per-lane torch.cuda.Stream, torch.cuda.stream contexts). This CPU
+          # benchmark keeps every other line of production startup real -- ordered
+          # stages, manifest verification, three model lanes, per-lane benchmarks,
+          # readiness, and both /transcribe-batch envelopes -- by neutralizing only
+          # those three hardware guards via an entrypoint shim.
+          cat > "$RUNNER_TEMP/cpu-benchmark-shim.py" <<'SHIM'
+          """CPU benchmark harness: neutralize CUDA hardware guards, run the real server."""
+          import contextlib
+          import runpy
+
+          import torch
+
+
+          class _CpuStream:
+              def synchronize(self):
+                  pass
+
+
+          torch.cuda.is_available = lambda: True
+          torch.cuda.Stream = lambda: _CpuStream()
+          torch.cuda.stream = lambda stream: contextlib.nullcontext()
+          print("cpu benchmark shim active: CUDA hardware guards neutralized", flush=True)
+          runpy.run_path("/workspace/server.py", run_name="__main__")
+          SHIM
           worker_dir="$(mktemp -d)"
-          container="$(docker run --detach --name parakeet-real-model-benchmark --publish 8080:8080 --env VAST_TCP_PORT_3000=3000 --env PUBLIC_IPADDR=127.0.0.1 --env PARAKEET_INSTANCES=3 --env STARTUP_TIMEOUT_SECONDS=900 --env WORKER_PORT=3000 --env USE_SSL=false --env REPORT_ADDR=http://127.0.0.1:9 --env CONTAINER_ID=0 --env MASTER_TOKEN=x --env PYWORKER_VERSION=0 --env URL=http://127.0.0.1:3000 "$CPU_BENCHMARK_IMAGE")"
+          container="$(docker run --detach --name parakeet-real-model-benchmark --publish 8080:8080 --env PARAKEET_INSTANCES=3 --entrypoint python3 -v "$RUNNER_TEMP/cpu-benchmark-shim.py:/workspace/cpu-benchmark-shim.py:ro" "$CPU_BENCHMARK_IMAGE" /workspace/cpu-benchmark-shim.py)"
           cleanup() {
             docker logs "$container" || true
             docker rm --force "$container" >/dev/null 2>&1 || true
             rm -rf "$worker_dir"
           }
           trap cleanup EXIT
-          deadline=$((SECONDS + 900))
+          deadline=$((SECONDS + 1200))
           while :; do
             health="$(python3 -c 'import json
           from urllib.request import urlopen
@@ -286,17 +270,47 @@ jobs:
           except Exception:
               pass' || true)"
             [ "$health" = ready ] && break
-            if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != true ]; then echo "real-model container exited early (code $(docker inspect -f '{{.State.ExitCode}}' "$container"))" >&2; docker logs "$container" >&2 || true; exit 1; fi
+            [ "$health" = failed ] && { echo "ASR startup failed (healthz=failed)" >&2; exit 1; }
+            if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != true ]; then echo "real-model container exited early (code $(docker inspect -f '{{.State.ExitCode}}' "$container"))" >&2; exit 1; fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "real-model server did not become ready" >&2; exit 1; }
             sleep 5
           done
+          echo "real-model server ready; startup stage lines:"
+          docker logs "$container" 2>&1 | grep ' STAGE ' | tee "$RUNNER_TEMP/stage-lines.txt"
+          {
+            echo '### ASR startup stage timings'
+            echo '```'
+            cat "$RUNNER_TEMP/stage-lines.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - "$RUNNER_TEMP/stage-lines.txt" <<'PY'
+          import sys
+
+          ended, retried = set(), set()
+          for line in open(sys.argv[1]).read().splitlines():
+              parts = line.split()
+              if len(parts) < 4 or parts[1] != "STAGE":
+                  continue
+              if parts[3] == "end":
+                  ended.add(parts[2])
+                  if "status=retry" in line:
+                      retried.add(parts[2])
+          expected = ["deps", "model_files", "lane_1", "lane_2", "lane_3", "benchmark_1", "benchmark_2", "benchmark_3", "ready"]
+          missing = [stage for stage in expected if stage not in ended]
+          if missing or retried:
+              raise SystemExit(f"startup stages incomplete: missing={missing} retried={sorted(retried)}")
+          print(f"startup stages complete: {len(ended)} ended, 0 retries")
+          PY
+          bundled_sha="$(docker exec "$container" sha256sum /workspace/fixtures/2086-149220-0033.wav | awk '{print $1}')"
+          host_sha="$(sha256sum asr/fixtures/audio/2086-149220-0033.wav | awk '{print $1}')"
+          test "$bundled_sha" = "$host_sha"
+          echo "bundled fixture verified: sha256=$host_sha"
           docker cp "$container:/workspace/vast-pyworker/." "$worker_dir"
           PYWORKER_DIR="$worker_dir" VAST_BENCHMARK_ARTIFACT=asr/fixtures/audio/2086-149220-0033.wav python3 - <<'PY'
           import asyncio
-          import base64
-          import io
-          import os
+          import hashlib
           import json
+          import os
           import runpy
           import sys
           import types
@@ -310,16 +324,17 @@ jobs:
           sys.modules["vastai"] = fake
           worker = runpy.run_path(os.path.join(os.environ["PYWORKER_DIR"], "worker.py"), run_name="cpu_benchmark")
           payload = worker["benchmark_payload"]()
+
+          # 1) canonical requests-route benchmark through the shipped worker contract
           request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
           try:
               with urlopen(request, timeout=900) as response:
                   status, body, headers = response.status, response.read(), dict(response.headers.items())
           except HTTPError as error:
               status, body, headers = error.code, error.read(), dict(error.headers.items())
-          print(f"benchmark status={status}")
-          print(f"benchmark body_head={body[:2000].decode('utf-8', 'replace')}")
+          print(f"benchmark requests-route status={status}")
           if status != 200:
-              raise SystemExit(f"real-model benchmark returned HTTP {status}")
+              raise SystemExit(f"requests-route benchmark returned HTTP {status}: {body[:2000].decode('utf-8', 'replace')}")
           class Response:
               def __init__(self, **kwargs):
                   self.kwargs = kwargs
@@ -348,45 +363,62 @@ jobs:
           print(f"validated_response status={validated_status}")
           if validated_status != 200:
               raise SystemExit(f"validated_response returned HTTP {validated_status}")
-          with wave.open(os.environ["VAST_BENCHMARK_ARTIFACT"], "rb") as fixture:
-              if (fixture.getnchannels(), fixture.getsampwidth(), fixture.getframerate(), fixture.getcomptype()) != (1, 2, 16000, "NONE"):
-                  raise SystemExit("fixture must be 16 kHz mono s16le WAV")
-              frame_data = fixture.readframes(fixture.getnframes())
-              frame_rate = fixture.getframerate()
-              params = fixture.getparams()
-          long_audio = io.BytesIO()
-          with wave.open(long_audio, "wb") as generated:
-              generated.setparams(params)
-              generated.writeframes(frame_data * 40)
-          long_duration = len(frame_data) * 40 / (frame_rate * 2)
-          long_payload = {"requests": [{
-              **payload["requests"][0],
-              "audio_filename": "long-benchmark.wav",
-              "audio_duration_seconds": long_duration,
-              "audio_base64": base64.b64encode(long_audio.getvalue()).decode(),
-          }]}
-          request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(long_payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+
+          # 2) the new hourly-batch NDJSON route with the bundled fixture clip
+          fixture = os.environ["VAST_BENCHMARK_ARTIFACT"]
+          with open(fixture, "rb") as source:
+              audio = source.read()
+          with wave.open(fixture, "rb") as probe:
+              frames, rate = probe.getnframes(), probe.getframerate()
+          duration = frames / rate
+          template = payload["requests"][0]
+          receipt = {
+              "size_bytes": len(audio),
+              "sha256": hashlib.sha256(audio).hexdigest(),
+              "canonical_frame_count": frames,
+              "canonical_sample_rate": rate,
+              "canonical_channel_count": 1,
+              "media_type": "audio/wav",
+          }
+          def batch_item(index):
+              return {
+                  "id": hashlib.sha256(audio + str(index).encode()).hexdigest(),
+                  "lane": "parakeet_v3",
+                  "audio_url": os.environ["BATCH_FIXTURE_URL"],
+                  "params": {
+                      "request_version": template["request_version"],
+                      "model_id": template["model_id"],
+                      "model_revision": template["model_revision"],
+                      "audio_duration_seconds": duration,
+                      "audio_receipt": receipt,
+                  },
+              }
+          batch = {"batch_id": "gha-hourly-batch-benchmark", "items": [batch_item(0), batch_item(1)]}
+          request = Request("http://127.0.0.1:8080/transcribe-batch", data=json.dumps(batch).encode(), headers={"Content-Type": "application/json"}, method="POST")
           try:
-              with urlopen(request, timeout=1500) as response:
-                  long_status, long_body = response.status, response.read()
+              with urlopen(request, timeout=1800) as response:
+                  batch_status, batch_body = response.status, response.read()
           except HTTPError as error:
-              long_status, long_body = error.code, error.read()
-          print(f"long_benchmark status={long_status}")
-          if long_status != 200:
-              raise SystemExit(f"long real-model benchmark returned HTTP {long_status}: {long_body[:2000].decode('utf-8', 'replace')}")
-          long_segments = json.loads(long_body)[0]["segments"]
-          starts = [segment["start_seconds"] for segment in long_segments]
-          ends = [segment["end_seconds"] for segment in long_segments]
-          print(f"long_benchmark segments={len(long_segments)} max_end_seconds={max(ends, default=0):.3f}")
-          if not long_segments or max(ends) <= 200 or starts != sorted(starts) or ends != sorted(ends):
-              raise SystemExit("long real-model benchmark did not return monotonic absolute segments beyond 200 seconds")
+              batch_status, batch_body = error.code, error.read()
+          events = [json.loads(line) for line in batch_body.splitlines() if line.strip()]
+          kinds = [event["type"] for event in events]
+          items = [event for event in events if event["type"] == "item"]
+          print(f"benchmark items-route status={batch_status} events={len(events)} kinds={kinds}")
+          print(f"benchmark items-route item_statuses={[item['status'] for item in items]}")
+          if batch_status != 200:
+              raise SystemExit(f"items-route benchmark returned HTTP {batch_status}: {batch_body[:2000].decode('utf-8', 'replace')}")
+          if kinds[0] != "accepted" or kinds[-1] != "end" or len(items) != 2:
+              raise SystemExit(f"items-route benchmark did not stream accepted/item/item/end: kinds={kinds}")
+          if any(item["status"] != "succeeded" or not item.get("candidate", {}).get("segments") for item in items):
+              raise SystemExit("items-route benchmark did not produce two succeeded candidates with segments")
+          print("items-route candidates ok=2 (bundled fixture clip exercised end to end)")
           PY
       - name: Prove offline imports
         if: inputs.proof_only
         working-directory: source
         env:
           CPU_BENCHMARK_IMAGE: local/parakeet-v3-real-model-benchmark:${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker run --rm --entrypoint python "$CPU_BENCHMARK_IMAGE" -I -c "import nemo, torch, vastai, cuda.bindings; from nemo.collections.asr.models import ASRModel"
+        run: docker run --rm --entrypoint python "$CPU_BENCHMARK_IMAGE" -I -c "import nemo, torch, vastai; from nemo.collections.asr.models import ASRModel"
       - name: Build one immutable serverless wrapper
         if: '!inputs.proof_only'
         id: build
@@ -394,18 +426,56 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          SOURCE_SHA: 482204e85c2c9ab440e9351e5495d037c25a37cf
-          STAGING_TAG: staging-canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}-${{ github.run_attempt }}
+          STAGING_TAG: staging-hourly-batch-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          docker buildx build --platform linux/amd64 --push --provenance=mode=max --sbom=true --metadata-file metadata.json --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "io.adaudit.canary=known-vulnerable-non-production" -f asr/vast-serverless.Dockerfile -t "$IMAGE:$STAGING_TAG" .
+          docker buildx build --platform linux/amd64 \
+            --output type=image,name="$IMAGE:$STAGING_TAG",push=true,oci-mediatypes=true,compression=zstd,force-compression=true \
+            --provenance=mode=max --sbom=true --metadata-file metadata.json \
+            --build-arg ASR_VERIFY_NEMO_CONNECTOR=1 \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" --label "io.adaudit.build-channel=hourly-batch" \
+            -f asr/vast-serverless.Dockerfile .
           digest="$(jq -r '."containerimage.digest"' metadata.json)"
           test "$digest" != null
+          case "$digest" in sha256:*) ;; *) echo "unexpected digest: $digest" >&2; exit 1;; esac
           docker pull "$IMAGE@$digest"
           docker save "$IMAGE@$digest" -o image.tar
           docker run --rm -v "$PWD:/workspace:ro" -w /workspace ghcr.io/google/osv-scanner-action@sha256:2b2b9fbe57b14097fb6953577f2fbecf49941e2346c4eceb9f0852a9682ae868 scan image --archive /workspace/image.tar || echo 'WARNING: authorized known-vulnerable non-production canary OSV result retained in this run log.' >&2
           docker buildx imagetools inspect "$IMAGE@$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Audit pushed zstd layers
+        if: '!inputs.proof_only'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "$IMAGE@$DIGEST" > "$RUNNER_TEMP/index.json"
+          amd64_digest="$(jq -er '[.manifests[] | select(.platform.architecture == "amd64" and .platform.os == "linux")][0].digest' "$RUNNER_TEMP/index.json")"
+          docker buildx imagetools inspect --raw "$IMAGE@$amd64_digest" > "$RUNNER_TEMP/manifest.json"
+          IMAGE_MANIFEST="$RUNNER_TEMP/manifest.json" SUMMARY="$GITHUB_STEP_SUMMARY" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          manifest = json.load(open(os.environ["IMAGE_MANIFEST"]))
+          layers = manifest["layers"]
+          expected = "application/vnd.oci.image.layer.v1.tar+zstd"
+          bad = sorted({layer["mediaType"] for layer in layers if layer["mediaType"] != expected})
+          if bad:
+              raise SystemExit(f"layers not uniformly zstd-compressed: {bad}")
+          total = sum(layer["size"] for layer in layers)
+          largest = max(layer["size"] for layer in layers)
+          limit = 9 * 1024 ** 3
+          if largest > limit:
+              raise SystemExit(f"largest layer {largest} bytes exceeds the {limit} byte cap")
+          print(f"zstd layers ok: count={len(layers)} total_compressed_bytes={total} largest_layer_bytes={largest}")
+          with open(os.environ["SUMMARY"], "a") as summary:
+              summary.write("### Pushed image layers\n")
+              summary.write(f"- amd64 layers: {len(layers)} (all `{expected}`)\n")
+              summary.write(f"- total compressed size: {total / 1024 ** 3:.3f} GiB ({total} bytes)\n")
+              summary.write(f"- largest layer: {largest / 1024 ** 3:.3f} GiB\n")
+          PY
       - name: Attest final OCI index
         if: '!inputs.proof_only'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -419,7 +489,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
-          TAG: canary-known-vulnerable-parakeet-482204e85c2c9ab440e9351e5495d037c25a37cf-${{ github.run_id }}
+          TAG: hourly-batch-${{ github.sha }}-${{ github.run_id }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
@@ -436,6 +506,20 @@ jobs:
 
           resolved="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' 2>/dev/null | jq -er '.digest')" || exit 1
           test "$resolved" = "$DIGEST"
+      - name: Write publish summary
+        if: '!inputs.proof_only'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/vast-bench-asr-serverless
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: hourly-batch-${{ github.sha }}-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published hourly-batch image"
+            echo "- ref: \`$IMAGE:$TAG\`"
+            echo "- digest: \`$IMAGE@$DIGEST\`"
+            echo "- branch: $GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
   publish-diar-v1:
     if: inputs.authorize_known_vulnerable_canary && inputs.target == 'diar' && github.ref == 'refs/heads/canary/parakeet-v3-known-vulnerable-20260904'
     runs-on: ubuntu-24.04

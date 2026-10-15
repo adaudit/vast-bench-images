@@ -3,7 +3,6 @@
 import hashlib
 import json
 import os
-import queue
 import signal
 import subprocess
 import sys
@@ -16,12 +15,13 @@ import urllib.request
 import re
 from pathlib import Path
 
+try:
+    from parakeet_pool import ParakeetPool
+except ModuleNotFoundError:
+    from asr.parakeet_pool import ParakeetPool
+
 MEDIA_TYPE = "application/vnd.adaudit.asr-candidate-v1+json"
-FALLBACKS = {
-    "parakeet_dual": "whisper_turbo_fallback",
-    "parakeet_pyannote_mono": "whisper_turbo_fallback",
-    "whisper_turbo_fallback": "whisper_v3_salvage",
-}
+FALLBACKS = {}
 _MODELS = {}
 _MODEL_LOCK = threading.Lock()
 _PARAKEET_POOLS = {}
@@ -50,21 +50,6 @@ class ParakeetInstance:
         self.stream = stream
         self.lock = threading.Lock()
 
-
-class ParakeetPool:
-    """Blocking checkout pool for independent Parakeet inference lanes."""
-
-    def __init__(self, models, instances, loader):
-        self.instances = [loader(models) for _ in range(instances)]
-        self._available = queue.Queue(maxsize=instances)
-        for instance in self.instances:
-            self._available.put(instance)
-
-    def checkout(self):
-        return self._available.get()
-
-    def checkin(self, instance):
-        self._available.put(instance)
 
 
 def validate_baked_models(models, manifest):
@@ -135,9 +120,10 @@ def _cached_model(key, factory):
 def _load_parakeet_instance(models):
     import torch
     from nemo.collections.asr.models import ASRModel
-    model = ASRModel.from_pretrained(
-        model_name="nvidia/parakeet-tdt-0.6b-v2", cache_dir=str(models / "parakeet")
-    )
+    baked = sorted((models / "parakeet").glob("*.nemo"))
+    if len(baked) != 1:
+        raise WorkerError("exact baked Parakeet artifact is required")
+    model = ASRModel.restore_from(str(baked[0]))
     return ParakeetInstance(model, torch.cuda.Stream())
 
 
@@ -147,7 +133,7 @@ def parakeet_pool(models, instances=None):
     key = (str(Path(models).resolve()), instances)
     with _PARAKEET_POOL_LOCK:
         if key not in _PARAKEET_POOLS:
-            _PARAKEET_POOLS[key] = ParakeetPool(models, instances, _load_parakeet_instance)
+            _PARAKEET_POOLS[key] = ParakeetPool(instances, lambda: _load_parakeet_instance(models))
         return _PARAKEET_POOLS[key]
 
 
@@ -193,10 +179,8 @@ def diarize(candidate, audio, models):
 def transcribe(audio, lane, models, blocked, batch_size=8):
     if lane in blocked:
         raise WorkerError(f"lane {lane} blocked: HF_TOKEN plus pyannote license acceptance is required")
-    if lane == "whisper_turbo_fallback":
-        return candidate_from_whisper(audio, models / "whisper_turbo", lane)
-    if lane == "whisper_v3_salvage":
-        return candidate_from_whisper(audio, models / "whisper_v3", lane)
+    if lane not in {"parakeet_dual", "parakeet_pyannote_mono"}:
+        raise WorkerError("lane is not in the immutable Parakeet/Qwen closure")
     candidate = candidate_from_parakeet(audio, models, lane, batch_size)
     return candidate if lane == "parakeet_dual" else diarize(candidate, audio, models)
 

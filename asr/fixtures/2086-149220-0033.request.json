@@ -1,0 +1,1 @@
+{"request_version":"parakeet-v3-offline-request-v1","lane":"parakeet_v3","model_id":"nvidia/parakeet-tdt-0.6b-v3","model_revision":"541d1f99c6b0c3cd0b11a95167540bb8edefd82b","audio_path":"/workspace/input/audio/2086-149220-0033.wav","audio_duration_seconds":10.0}

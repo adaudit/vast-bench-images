@@ -4,43 +4,26 @@ import json
 import logging
 import os
 import tempfile
-import sys
 import threading
-import time
-import traceback
-from collections import deque
+import base64
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
-
-try:
-    from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, guard_model_decoding, verify_model
-    from vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
+    from offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from vast_adapter import ContractError, parse_request
     from parakeet_pool import ParakeetPool
+    from startup import Stages, verify_extracted_model
+    from batch_runtime import batch_events
 except ModuleNotFoundError:
-    from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, guard_model_decoding, verify_model
-    from asr.vast_adapter import ContractError, batch_and_restitch, parse_request, slice_wav
+    from asr.offline_entrypoint import MODEL_PATH, build_candidate, extract_aligned_words, verify_model
+    from asr.vast_adapter import ContractError, parse_request
     from asr.parakeet_pool import ParakeetPool
+    from asr.startup import Stages, verify_extracted_model
+    from asr.batch_runtime import batch_events
 
 
 LOGGER = logging.getLogger("parakeet.server")
-CHUNK_BATCH = max(1, int(os.environ.get("PARAKEET_CHUNK_BATCH", "8")))
-
-
-def _cuda_available():
-    return torch is not None and torch.cuda.is_available()
-
-
-
-def configure_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        stream=sys.stderr,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
 
 
 class NotReadyError(ContractError):
@@ -48,10 +31,15 @@ class NotReadyError(ContractError):
 
 
 class Runtime:
-    def __init__(self, *, model_verifier=verify_model, model_loader=None, transcriber=None, batch_transcriber=None, instance_count=3):
+    def __init__(self, *, model_verifier=None, model_loader=None, transcriber=None, batch_transcriber=None, instance_count=3, stages=None, benchmark=None):
         if instance_count != 3 or os.environ.get("PARAKEET_INSTANCES", "3") != "3":
             raise ValueError("PARAKEET_INSTANCES must be exactly 3")
-        self.model_verifier = model_verifier
+        self.model_verifier = model_verifier or (lambda path: verify_extracted_model() if Path("/workspace/models/parakeet-v3").is_dir() else verify_model(path))
+        self._production = model_loader is None
+        self.stages = stages or Stages(os.environ.get("ASR_STARTUP_MARKER_DIR", "/tmp/asr-startup-markers") if self._production else None)
+        self.benchmark = benchmark or (self._benchmark if self._production else lambda model: None)
+        self._lanes = []
+        self._streams = {}
         self.model_loader = model_loader or self._load_model
         self.model = None
         self.pool = None
@@ -59,12 +47,7 @@ class Runtime:
         self.batch_transcriber = batch_transcriber
         self.instance_count = instance_count
         self.state = "not_started"
-        self.error = None
         self._state_lock = threading.Lock()
-        self._stats_lock = threading.Lock()
-        self._recent = deque(maxlen=256)
-        self._checked_out_lanes = 0
-        self._max_concurrent_lanes = 0
 
     @property
     def ready(self):
@@ -76,27 +59,33 @@ class Runtime:
                 return
             self.state = "loading"
         try:
-            self.model_verifier(MODEL_PATH)
-            pool = ParakeetPool(self.instance_count, self.model_loader)
-            models = [getattr(lane, "model", None) for lane in pool.instances]
-            if len(pool.instances) != self.instance_count or len({id(model) for model in models}) != self.instance_count or any(not callable(getattr(model, "transcribe", None)) for model in models):
+            self.stages.run("deps", self._check_dependencies)
+            self.stages.run("model_files", lambda: self.model_verifier(MODEL_PATH))
+            for index in range(self.instance_count):
+                def load():
+                    model = self.model_loader()
+                    if model is None or not callable(getattr(model, "transcribe", None)) or any(model is old for old in self._lanes):
+                        raise ValueError("model lane is unusable")
+                    self._lanes.append(model)
+                    return model
+                self.stages.run(f"lane_{index + 1}", load)
+            pool = ParakeetPool(self.instance_count, iter(self._lanes).__next__)
+            if len(pool.instances) != self.instance_count or len({id(model) for model in pool.instances}) != self.instance_count or any(model is None or not callable(getattr(model, "transcribe", None)) for model in pool.instances):
                 raise ValueError("model lanes are unusable")
-        except Exception as exc:
-            LOGGER.exception("parakeet initialization failed")
+            self.pool = pool
+            self.model = pool.instances[0]
+            for index, model in enumerate(pool.instances):
+                self.stages.run(f"benchmark_{index + 1}", lambda model=model: self.benchmark(model))
+            self.stages.run("ready", lambda: None)
+        except Exception:
+            print("ASR_STARTUP_FAILED", flush=True)
             with self._state_lock:
-                self.error = str(exc)
                 self.state = "failed"
             return
         with self._state_lock:
             self.pool = pool
-            self.model = models[0]
+            self.model = pool.instances[0]
             self.state = "ready"
-        LOGGER.info(
-            "parakeet_runtime device=%s dtype_policy=%s lane_count=%d",
-            "cuda" if _cuda_available() else "cpu",
-            "bf16-autocast" if _cuda_available() else "fp32-cpu",
-            self.instance_count,
-        )
 
     def start_initialization(self):
         threading.Thread(target=self.initialize_once, daemon=True).start()
@@ -105,53 +94,8 @@ class Runtime:
         if self.state == "ready":
             return 200, {"status": "ready"}
         if self.state == "failed":
-            return 503, {"status": "failed", "cause": "initialization failed", "error": self.error}
+            return 503, {"status": "failed", "cause": "initialization failed"}
         return 503, {"status": "loading" if self.state == "loading" else "not started"}
-
-    def stats(self):
-        with self._stats_lock:
-            return {
-                "recent": [dict(entry) for entry in self._recent],
-                "max_concurrent_lanes": self._max_concurrent_lanes,
-                "lane_count": self.instance_count,
-            }
-
-    def _checkout_lane(self):
-        lane = self.pool.checkout()
-        with self._stats_lock:
-            self._checked_out_lanes += 1
-            self._max_concurrent_lanes = max(self._max_concurrent_lanes, self._checked_out_lanes)
-        return lane
-
-    def _checkin_lane(self, lane):
-        with self._stats_lock:
-            self._checked_out_lanes -= 1
-        self.pool.checkin(lane)
-
-    def _record_timing(self, lane_index, chunk_count, sub_batches, audio_seconds, gpu_seconds, started, finished):
-        with self._stats_lock:
-            max_concurrent_lanes = self._max_concurrent_lanes
-            self._recent.append({
-                "lane_index": lane_index,
-                "chunk_count": chunk_count,
-                "sub_batches": sub_batches,
-                "audio_seconds": audio_seconds,
-                "gpu_seconds": gpu_seconds,
-                "started_monotonic": started,
-                "finished_monotonic": finished,
-                "max_concurrent_lanes": max_concurrent_lanes,
-            })
-        LOGGER.info(
-            "parakeet_request_timing lane_index=%s chunk_count=%d sub_batches=%d audio_seconds=%.3f gpu_seconds=%.3f started_monotonic=%.6f finished_monotonic=%.6f max_concurrent_lanes=%d",
-            lane_index,
-            chunk_count,
-            sub_batches,
-            audio_seconds,
-            gpu_seconds,
-            started,
-            finished,
-            max_concurrent_lanes,
-        )
 
     def check_ready(self):
         return self.ready
@@ -159,95 +103,71 @@ class Runtime:
     def _load_model(self):
         from nemo.collections.asr.models import ASRModel
         from omegaconf import open_dict
-        model = ASRModel.restore_from(str(MODEL_PATH))
+        from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
+        import torch
+        extracted = "/workspace/models/parakeet-v3"
+        connector = SaveRestoreConnector()
+        connector.model_extracted_dir = extracted
+        if Path(extracted).is_dir():
+            model = ASRModel.restore_from(extracted, save_restore_connector=connector)
+        else:
+            # The separate non-serverless v3 image retains its archive layout.
+            model = ASRModel.restore_from(str(MODEL_PATH))
+        self._streams[id(model)] = torch.cuda.Stream()
         with open_dict(model.cfg.decoding):
             model.cfg.decoding.compute_timestamps = True
             model.cfg.decoding.preserve_alignments = True
-            model.cfg.decoding.confidence_cfg = {"preserve_token_confidence": True, "preserve_word_confidence": False}
-            if "greedy" not in model.cfg.decoding:
-                model.cfg.decoding.greedy = {}
-            # NeMo's CUDA-graph TDT decoder captures a stream per lane and crashes when lanes decode concurrently.
-            model.cfg.decoding.greedy.use_cuda_graph_decoder = False
+            model.cfg.decoding.confidence_cfg = {"preserve_word_confidence": True}
         model.change_decoding_strategy(model.cfg.decoding, verbose=False)
-        guard_model_decoding(model)
         return model
 
-    def _transcribe_many(self, requests):
-        files, chunk_request_indexes = [], []
-        started = time.monotonic()
-        lane = None
-        lane_index = None
-        gpu_started = None
-        sub_batches = 0
+    def _check_dependencies(self):
+        if self._production:
+            logging.disable(logging.CRITICAL)
+            import importlib.metadata
+            if importlib.metadata.version("nemo_toolkit") != "2.4.1":
+                raise RuntimeError("unexpected NeMo version")
+            import torch
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA unavailable")
+
+    def _benchmark(self, model):
+        audio = Path("/workspace/fixtures/2086-149220-0033.wav").read_bytes()
+        payload = {"request_version": "parakeet-v3-offline-request-v1", "lane": "parakeet_v3", "model_id": "nvidia/parakeet-tdt-0.6b-v3", "model_revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "audio_filename": "benchmark.wav", "audio_duration_seconds": 7.435, "audio_base64": base64.b64encode(audio).decode()}
+        build_candidate(7.435, self._transcribe_many([parse_request(payload)], model=model)[0])
+
+    def _transcribe_many(self, requests, model=None):
+        files = []
+        borrowed = model is None
         try:
-            for request_index, request in enumerate(requests):
-                for start, end in request.chunks:
-                    audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                    files.append(audio.name)
-                    try:
-                        audio.write(slice_wav(request.audio, start, end))
-                    finally:
-                        audio.close()
-                    chunk_request_indexes.append(request_index)
-            lane = self._checkout_lane()
-            lane_index = next(index for index, candidate in enumerate(self.pool.instances) if candidate is lane)
-            gpu_started = time.monotonic()
+            for request in requests:
+                audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                audio.write(request.audio); audio.close(); files.append(audio.name)
+            if borrowed:
+                model = self.pool.checkout()
             try:
-                chunk_segments = [[] for _ in requests]
-                offset = 0
-                while offset < len(files):
-                    size, retried = min(CHUNK_BATCH, len(files) - offset), False
-                    while True:
-                        paths = files[offset:offset + size]
-                        try:
-                            sub_batches += 1
-                            if _cuda_available():
-                                with torch.cuda.stream(lane.stream):
-                                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                                        hypotheses = lane.model.transcribe(paths, batch_size=len(paths), timestamps=True)
-                            else:
-                                hypotheses = lane.model.transcribe(paths, batch_size=len(paths), timestamps=True)
-                            break
-                        except Exception as error:
-                            if retried or size == 1 or not _cuda_available() or not isinstance(error, torch.cuda.OutOfMemoryError):
-                                raise
-                            size //= 2
-                            retried = True
-                        finally:
-                            if lane.stream is not None:
-                                lane.stream.synchronize()
-                    if len(hypotheses) != len(paths):
-                        raise ContractError("model result count must equal chunk count")
-                    for hypothesis, request_index in zip(hypotheses, chunk_request_indexes[offset:offset + size]):
-                        timestamp = getattr(hypothesis, "timestamp", None)
-                        words = timestamp.get("word") if isinstance(timestamp, dict) else None
-                        LOGGER.info(
-                            "parakeet_inference result aligned_words=%d token_confidence_present=%s hypothesis_type=%s",
-                            len(words) if isinstance(words, list) else 0,
-                            getattr(hypothesis, "token_confidence", None) is not None,
-                            type(hypothesis).__name__,
-                        )
-                        chunk_segments[request_index].append(extract_aligned_words(hypothesis))
-                    offset += size
-                return [batch_and_restitch(chunk_segments[index], request.chunks) for index, request in enumerate(requests)]
+                LOGGER.info("parakeet_inference stage=start")
+                stream = self._streams.get(id(model))
+                if stream is None:
+                    segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True)]
+                else:
+                    import torch
+                    with torch.cuda.stream(stream):
+                        segments = [extract_aligned_words(result) for result in model.transcribe(files, batch_size=len(files), timestamps=True, num_workers=0)]
+                LOGGER.info("parakeet_inference stage=complete")
+                return segments
             finally:
-                self._checkin_lane(lane)
-        finally:
-            finished = time.monotonic()
-            self._record_timing(
-                lane_index,
-                len(chunk_request_indexes),
-                sub_batches,
-                sum(request.audio_duration_seconds for request in requests),
-                (finished - gpu_started) if gpu_started is not None else 0.0,
-                started,
-                finished,
-            )
-            for path in files:
                 try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
+                    stream = self._streams.get(id(model))
+                    if stream is not None:
+                        stream.synchronize()
+                finally:
+                    if borrowed:
+                        self.pool.checkin(model)
+        finally:
+            for path in files:
+                try: __import__("os").unlink(path)
+                except FileNotFoundError: pass
 
     def transcribe(self, payload):
         return self.transcribe_batch([payload])[0]
@@ -256,13 +176,6 @@ class Runtime:
         if not self.ready:
             raise NotReadyError("runtime is not ready")
         requests = [parse_request(payload) for payload in payloads]
-        LOGGER.info(
-            "parakeet_batch request_count=%d filenames=%s durations=%s audio_bytes=%s",
-            len(requests),
-            [request.audio_filename for request in requests],
-            [request.audio_duration_seconds for request in requests],
-            [len(request.audio) for request in requests],
-        )
         if not 0 < len(requests) <= 32: raise ContractError("batch is outside the permitted limit")
         if self.batch_transcriber: segments = self.batch_transcriber(requests)
         elif self.transcriber: segments = [self.transcriber(request) for request in requests]
@@ -292,41 +205,53 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
             self._send(status, payload)
 
         def do_POST(self):
-            if self.path not in ("/transcribe", "/transcribe-batch", "/stats") or self.headers.get("Content-Type") != "application/json":
+            if self.path not in ("/transcribe", "/transcribe-batch") or self.headers.get("Content-Type") != "application/json":
                 self._send(404, {"error": "not found"})
                 return
             try:
+                if not runtime.ready:
+                    raise NotReadyError("runtime is not ready")
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 700 * 1024 * 1024:
                     raise ContractError("request body is outside the permitted limit")
                 payload = json.loads(self.rfile.read(length))
-                if self.path == "/stats":
-                    if payload != {}:
-                        raise ContractError("stats request must be an empty JSON object")
-                    self._send(200, runtime.stats())
+                if self.path == "/transcribe-batch" and "items" in payload:
+                    events = batch_events(runtime, payload)
+                    # Validate the batch envelope before committing HTTP success.
+                    first = next(events)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    try:
+                        self.wfile.write(json.dumps(first, separators=(",", ":")).encode() + b"\n")
+                        self.wfile.flush()
+                        for event in events:
+                            self.wfile.write(json.dumps(event, separators=(",", ":")).encode() + b"\n")
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    finally:
+                        events.close()
                     return
-                if not runtime.ready:
-                    raise NotReadyError("runtime is not ready")
                 self._send(200, runtime.transcribe(payload) if self.path == "/transcribe" else runtime.transcribe_batch(payload["requests"]))
+                return
             except NotReadyError:
                 LOGGER.info("parakeet_http status=503 category=not_ready")
                 self._send(503, {"error": "not ready"})
-            except json.JSONDecodeError as error:
-                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request", "reason": "invalid JSON"})
-            except ContractError as error:
-                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request", "reason": str(error)[:300]})
+            except json.JSONDecodeError:
+                LOGGER.info("parakeet_http status=400 category=json")
+                self._send(400, {"error": "invalid request"})
+            except ContractError:
+                LOGGER.info("parakeet_http status=400 category=contract")
+                self._send(400, {"error": "invalid request"})
             except ValueError as error:
-                LOGGER.warning("parakeet_http status=400 category=contract reason=%s", error)
-                self._send(400, {"error": "invalid request", "reason": str(error)[:300]})
+                LOGGER.info("parakeet_http status=400 category=%s", type(error).__name__)
+                self._send(400, {"error": "invalid request"})
             except Exception as error:
-                LOGGER.exception("parakeet_http status=500 category=%s", type(error).__name__)
-                reason = " | ".join(
-                    f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
-                    for frame in traceback.extract_tb(error.__traceback__)[-3:]
-                )[:600]
-                self._send(500, {"error": "internal error", "type": type(error).__name__, "message": str(error), "reason": reason})
+                LOGGER.info("parakeet_http status=500 category=%s", type(error).__name__)
+                self._send(500, {"error": "internal error"})
 
         def log_message(self, *_):
             pass
@@ -334,10 +259,5 @@ def make_server(address=("0.0.0.0", 8080), runtime=None):
     return ThreadingHTTPServer(address, Handler)
 
 
-def main():
-    configure_logging()
-    make_server().serve_forever()
-
-
 if __name__ == "__main__":
-    main()
+    make_server().serve_forever()

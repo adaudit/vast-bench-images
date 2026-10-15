@@ -2,18 +2,38 @@
 import base64
 import hashlib
 import json
-import logging
 import os
 import sys
+import logging
+
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from vastai import BenchmarkConfig, HandlerConfig, LogActionConfig, Worker, WorkerConfig
 
-from production_vast_batch import validate_batch
+def disable_sdk_sessions(backend_class):
+    """The application never uses sessions; disable every SDK session entry."""
+    async def rejected_session(self, request):
+        from aiohttp import web
+        return web.Response(status=404)
+    for name in ("session_create_handler", "session_end_handler", "session_get_handler", "session_health_handler"):
+        setattr(backend_class, name, rejected_session)
 
-LOGGER = logging.getLogger("parakeet.pyworker")
+try:
+    from vastai.serverless.server.lib import backend, metrics
+    disable_sdk_sessions(backend.Backend)
+    # SDK debug records include payloads/signatures; never emit them.
+    for module in (backend, metrics):
+        for value in vars(module).values():
+            if isinstance(value, logging.Logger):
+                value.disabled = True
+except ImportError:
+    if getattr(sys.modules.get("vastai"), "__file__", None):
+        raise RuntimeError("SDK session hardening unavailable") from None
+    # Dependency-free contract tests inject only the public SDK surface.
+
+from production_vast_batch import validate_batch
 
 READY_MARKER = "PARAKEET_SERVER_READY"
 BENCHMARK_ARTIFACT = Path("/workspace/fixtures/2086-149220-0033.wav")
@@ -43,52 +63,30 @@ def benchmark_payload():
 
 
 def workload(payload):
-    return float(len(payload["requests"]))
-
-def stats_workload(_):
-    return 1.0
+    return float(len(payload["items"] if "items" in payload else payload["requests"]))
 
 
 async def validated_response(client_request, model_response):
     """Fail the benchmark when its successful response is not a complete v3 batch."""
     from aiohttp import web
 
-    method = getattr(client_request, "method", "POST")
-    route = getattr(client_request, "path", "/transcribe-batch")
-    client_body = None
-    try:
-        client_body = await client_request.json()
-        requests = client_body["payload"]["requests"] if isinstance(client_body.get("payload"), dict) else client_body["requests"]
-    except (KeyError, TypeError):
-        keys = list(client_body) if isinstance(client_body, dict) else []
-        LOGGER.exception(
-            "pyworker envelope failure method=%s route=%s keys=%s",
-            method, route, keys,
-        )
-        return web.json_response({"error": "pyworker envelope", "keys": keys}, status=500)
-
-    status = getattr(model_response, "status", None)
-    body = b""
-    try:
-        body = await model_response.read()
-        if status == 200:
-            validate_batch(json.loads(body), requests)
-    except Exception:
-        LOGGER.exception(
-            "pyworker upstream failure method=%s route=%s status=%s body=%s",
-            method, route, status, body[:500].decode("utf-8", "replace"),
-        )
-        raise
-    if status != 200:
-        LOGGER.error(
-            "pyworker benchmark/proxy outcome method=%s route=%s status=%s body=%s",
-            method, route, status, body[:500].decode("utf-8", "replace"),
-        )
-    else:
-        LOGGER.info("pyworker benchmark/proxy outcome method=%s route=%s status=200", method, route)
+    if model_response.content_type == "application/x-ndjson":
+        # Forward bounded chunks, not readline(): a long candidate may exceed
+        # aiohttp's 64 KiB line limit. Go validates identity and candidate evidence
+        # incrementally before each durable per-item completion.
+        response = web.StreamResponse(status=model_response.status, headers={"Content-Type": "application/x-ndjson"})
+        await response.prepare(client_request)
+        async for chunk in model_response.content.iter_chunked(64 * 1024):
+            await response.write(chunk)
+        await response.write_eof()
+        return response
+    body = await model_response.read()
+    if model_response.status == 200:
+        incoming = await client_request.json()
+        validate_batch(json.loads(body), incoming.get("payload", incoming)["requests"])
     return web.Response(
         body=body,
-        status=status,
+        status=model_response.status,
         content_type=model_response.content_type,
         headers={name: value for name, value in model_response.headers.items() if name.lower() != "content-type"},
     )
@@ -99,22 +97,14 @@ Worker(
         model_server_port=8080,
         model_log_file="/workspace/parakeet-server.log",
         model_healthcheck_url="/healthz",
-        handlers=[
-            HandlerConfig(
-                route="/transcribe-batch",
-                allow_parallel_requests=True,
-                max_queue_time=60.0,
-                benchmark_config=BenchmarkConfig(generator=benchmark_payload, runs=1, do_warmup=False),
-                response_generator=validated_response,
-                workload_calculator=workload,
-            ),
-            HandlerConfig(
-                route="/stats",
-                allow_parallel_requests=True,
-                max_queue_time=60.0,
-                workload_calculator=stats_workload,
-            ),
-        ],
-        log_action_config=LogActionConfig(on_load=[READY_MARKER]),
+        handlers=[HandlerConfig(
+            route="/transcribe-batch",
+            allow_parallel_requests=False,
+            max_queue_time=60.0,
+            benchmark_config=BenchmarkConfig(generator=benchmark_payload, runs=1, do_warmup=False),
+            response_generator=validated_response,
+            workload_calculator=workload,
+        )],
+        log_action_config=LogActionConfig(on_load=[READY_MARKER], on_error=["ASR_STARTUP_FAILED"]),
     )
 ).run()

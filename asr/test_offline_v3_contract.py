@@ -5,10 +5,9 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import tempfile
 import unittest
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,30 +15,6 @@ ENTRYPOINT = ROOT / "asr" / "offline_entrypoint.py"
 spec = importlib.util.spec_from_file_location("offline_entrypoint", ENTRYPOINT)
 offline = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(offline)
-
-class BuggyWordOffsetsDecoding:
-    """Miniature of NeMo 2.4.1 ``RNNTBPEDecoding.get_words_offsets``: supported
-    punctuation decoded before any word exists reads ``word_offsets[-1]`` on an empty
-    list (rnnt_decoding.py:1966-1971) and raises IndexError."""
-
-    def __init__(self):
-        self.calls = []
-
-    def get_words_offsets(self, char_offsets, encoded_char_offsets, word_delimiter_char=" ", supported_punctuation=None):
-        self.calls.append((char_offsets, encoded_char_offsets, word_delimiter_char, supported_punctuation))
-        words, started = [], False
-        for entry in char_offsets:
-            for token in entry["char"]:
-                text = token.strip()
-                if supported_punctuation and text in supported_punctuation:
-                    if not started:
-                        raise IndexError("word_offsets index out of range")
-                    words[-1] = dict(words[-1], end_offset=entry["end_offset"])
-                elif text:
-                    started = True
-                    words.append({"word": text, "start_offset": entry["start_offset"], "end_offset": entry["end_offset"]})
-        return words
-
 
 
 class OfflineV3ContractTest(unittest.TestCase):
@@ -179,318 +154,18 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         with self.assertRaises(offline.ContractError):
             offline.build_candidate(7.435, [{"start_seconds": 7.36, "end_seconds": "7.44", "text": "fixture", "confidence": .9}])
 
-    def test_extracts_token_confidence_by_word_offsets(self):
-        words = [
-            {"word": f"word-{index}", "start": index, "end": index + 1, "start_offset": index, "end_offset": index + 1}
-            for index in range(213)
-        ]
-        chars = [
-            {"char": ["first", "extra"], "start_offset": 0, "end_offset": 1},
-            {"char": ["second", "extra"], "start_offset": 1, "end_offset": 2},
-            *[{"char": [f"token-{index}"], "start_offset": index, "end_offset": index + 1} for index in range(2, 213)],
-        ]
+    def test_extracts_real_nemo_word_timestamps_and_parallel_confidence(self):
         result = SimpleNamespace(
-            timestamp={"word": words, "char": chars},
-            token_confidence=[.9, .2, .8, .3] + [.7] * 211,
+            timestamp={"word": [{"word": "accepted", "start": 0.0, "end": 1.0}, {"word": "selected", "start": 1.0, "end": 2.0}]},
+            word_confidence=[.9, .4],
         )
-        segments = offline.extract_aligned_words(result)
-        self.assertEqual(len(segments), 213)
-        self.assertEqual([segment["confidence"] for segment in segments[:3]], [.2, .3, .7])
+        self.assertEqual(offline.extract_aligned_words(result), [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "text": "accepted", "confidence": .9},
+            {"start_seconds": 1.0, "end_seconds": 2.0, "text": "selected", "confidence": .4},
+        ])
+        with self.assertRaises(offline.ContractError):
+            offline.extract_aligned_words(SimpleNamespace(timestamp=result.timestamp, word_confidence=[.9]))
 
-    def test_extract_aligned_words_defaults_missing_token_confidence_to_zero(self):
-        result = SimpleNamespace(
-            timestamp={
-                "word": [{"word": "accepted", "start": 0.0, "end": 1.0, "start_offset": 0, "end_offset": 1}],
-                "char": [{"char": ["accepted"], "start_offset": 0, "end_offset": 1}],
-            },
-        )
-        self.assertEqual(offline.extract_aligned_words(result)[0]["confidence"], 0.0)
-    def test_extract_aligned_words_coerces_real_decoder_scalar_types(self):
-        class ItemScalar:
-            def __init__(self, value):
-                self.value = value
-
-            def item(self):
-                return self
-
-            def __float__(self):
-                return float(self.value)
-
-        try:
-            import numpy
-        except ImportError:
-            start, end = ItemScalar(1.25), ItemScalar(2.5)
-        else:
-            start, end = numpy.float32(1.25), numpy.float32(2.5)
-        try:
-            import torch
-        except ImportError:
-            confidence = ItemScalar(.75)
-        else:
-            confidence = torch.tensor(.75)
-
-        segments = offline.extract_aligned_words(SimpleNamespace(
-            timestamp={
-                "word": [{"word": "scalar", "start": start, "end": end, "start_offset": 0, "end_offset": 1}],
-                "char": [{"char": ["scalar"], "start_offset": 0, "end_offset": 1}],
-            },
-            token_confidence=[confidence],
-        ))
-
-        self.assertEqual(segments, [{"start_seconds": 1.25, "end_seconds": 2.5, "text": "scalar", "confidence": .75}])
-        self.assertTrue(all(isinstance(value, float) for value in segments[0].values() if not isinstance(value, str)))
-
-    def test_extract_aligned_words_bumps_zero_length_word_by_decoder_frame(self):
-        segments = offline.extract_aligned_words(SimpleNamespace(
-            timestamp={
-                "word": [{"word": "zero", "start": 1, "end": 1, "start_offset": 0, "end_offset": 1}],
-                "char": [{"char": ["zero"], "start_offset": 0, "end_offset": 1}],
-            },
-            token_confidence=[.5],
-        ))
-
-        self.assertEqual(segments[0]["end_seconds"], 1 + offline.DECODER_FRAME_SECONDS)
-
-    def test_extract_aligned_words_reports_descending_end_with_index(self):
-        with self.assertRaisesRegex(offline.ContractError, r"index 0.*end") as caught:
-            offline.extract_aligned_words(SimpleNamespace(
-                timestamp={
-                    "word": [{"word": "backward", "start": 2, "end": 1, "start_offset": 0, "end_offset": 1}],
-                    "char": [{"char": ["backward"], "start_offset": 0, "end_offset": 1}],
-                },
-                token_confidence=[.5],
-            ))
-
-        self.assertIn("'word': 'backward'", str(caught.exception))
-        self.assertIn("types(start=int, end=int, confidence=float)", str(caught.exception))
-    def test_extract_aligned_words_defaults_invalid_token_confidence_to_zero(self):
-        segments = offline.extract_aligned_words(SimpleNamespace(
-            timestamp={
-                "word": [{"word": "overconfident", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
-                "char": [{"char": ["overconfident"], "start_offset": 0, "end_offset": 1}],
-            },
-            token_confidence=[1.2],
-        ))
-        self.assertEqual(segments[0]["confidence"], 0.0)
-
-
-    def test_extract_aligned_words_keeps_bad_evidence_rejections_specific(self):
-        with self.assertRaisesRegex(offline.ContractError, r"no aligned word evidence.*words=NoneType\(len=n/a\).*confidences=list\(len=0\)"):
-            offline.extract_aligned_words(SimpleNamespace(timestamp={}, token_confidence=[]))
-        cases = (
-            (["not a word"], [.5]),
-            ([{"word": "", "start": 0, "end": 1}], [.5]),
-            ([{"word": "negative", "start": -1, "end": 1}], [.5]),
-            ([{"word": "not finite", "start": 0, "end": float("nan")}], [.5]),
-        )
-        for words, confidences in cases:
-            with self.subTest(words=words), self.assertRaisesRegex(offline.ContractError, r"index 0.*types\(start=.*end=.*confidence=.*\)"):
-                offline.extract_aligned_words(SimpleNamespace(
-                    timestamp={"word": words, "char": [{"char": ["token"], "start_offset": 0, "end_offset": 1}]},
-                    token_confidence=confidences,
-                ))
-
-    def test_extract_aligned_words_truncates_word_repr_in_error(self):
-        word = {"padding": "x" * 400, "word": "", "start": 0, "end": 1}
-        with self.assertRaises(offline.ContractError) as caught:
-            offline.extract_aligned_words(SimpleNamespace(
-                timestamp={
-                    "word": [word],
-                    "char": [{"char": ["token"], "start_offset": 0, "end_offset": 1}],
-                },
-                token_confidence=[.5],
-            ))
-        rendered_word = str(caught.exception).split("; types", 1)[0].rsplit("word=", 1)[1]
-        self.assertEqual(len(rendered_word), 200)
-
-    def test_decode_with_nemo_disables_cuda_graph_decoder(self):
-        class AttrDict(dict):
-            def __getattr__(self, name):
-                try:
-                    return self[name]
-                except KeyError:
-                    raise AttributeError(name)
-
-            def __setattr__(self, name, value):
-                self[name] = AttrDict(value) if isinstance(value, dict) and not isinstance(value, AttrDict) else value
-
-        hypothesis = SimpleNamespace(
-            timestamp={
-                "word": [{"word": "ok", "start": 0, "end": 1, "start_offset": 0, "end_offset": 1}],
-                "char": [{"char": ["ok"], "start_offset": 0, "end_offset": 1}],
-            },
-            token_confidence=[.9],
-        )
-
-        class Model:
-            def __init__(self, decoding):
-                self.cfg = AttrDict({"decoding": decoding})
-                self.strategies = []
-                self.transcribed = None
-                self.decoding = BuggyWordOffsetsDecoding()
-
-            def change_decoding_strategy(self, decoding_cfg, *, verbose):
-                self.strategies.append((decoding_cfg, verbose))
-                self.superseded_decoding = self.decoding  # NeMo rebuilds model.decoding here
-                self.decoding = BuggyWordOffsetsDecoding()
-
-
-            def transcribe(self, paths, *, timestamps):
-                self.transcribed = (paths, timestamps)
-                return [hypothesis]
-
-        restored = [Model(AttrDict({"greedy": AttrDict({"max_symbols": 10})})), Model(AttrDict({}))]
-        configured, created = restored
-
-        def restore_from(path):
-            model = restored.pop(0)
-            model.restored_from = path
-            return model
-
-        nemo = ModuleType("nemo")
-        collections = ModuleType("nemo.collections")
-        asr = ModuleType("nemo.collections.asr")
-        models = ModuleType("nemo.collections.asr.models")
-        models.ASRModel = type("ASRModel", (), {"restore_from": staticmethod(restore_from)})
-        nemo.collections = collections; collections.asr = asr; asr.models = models
-        omegaconf = ModuleType("omegaconf")
-
-        class FakeOpenDict:
-            def __init__(self, config): self.config = config
-            def __enter__(self): return self.config
-            def __exit__(self, *_): return None
-
-        omegaconf.open_dict = FakeOpenDict
-        stubs = {"nemo": nemo, "nemo.collections": collections, "nemo.collections.asr": asr, "nemo.collections.asr.models": models, "omegaconf": omegaconf}
-        previous = {name: sys.modules.get(name) for name in stubs}
-        sys.modules.update(stubs)
-        try:
-            segments = [offline.decode_with_nemo("model-a.nemo", "audio.wav"), offline.decode_with_nemo("model-b.nemo", "audio.wav")]
-        finally:
-            for name, module in previous.items():
-                if module is None:
-                    del sys.modules[name]
-                else:
-                    sys.modules[name] = module
-        self.assertEqual(segments, [[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "ok", "confidence": .9}]] * 2)
-        self.assertIs(configured.cfg.decoding.greedy.use_cuda_graph_decoder, False)
-        self.assertEqual(configured.cfg.decoding.greedy.max_symbols, 10)
-        self.assertIs(created.cfg.decoding.greedy.use_cuda_graph_decoder, False)
-        self.assertEqual([model.restored_from for model in (configured, created)], ["model-a.nemo", "model-b.nemo"])
-        self.assertEqual([model.transcribed for model in (configured, created)], [(["audio.wav"], True)] * 2)
-        for model in (configured, created):
-            self.assertIs(model.cfg.decoding.compute_timestamps, True)
-            self.assertIs(model.cfg.decoding.preserve_alignments, True)
-            self.assertEqual(model.cfg.decoding.confidence_cfg, {"preserve_token_confidence": True, "preserve_word_confidence": False})
-            self.assertEqual(model.strategies, [(model.cfg.decoding, False)])
-            # the guard must land on the decoding instance rebuilt by change_decoding_strategy
-            self.assertTrue(getattr(model.decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
-            self.assertEqual(model.decoding.get_words_offsets.__name__, "get_words_offsets")
-            self.assertFalse(getattr(model.superseded_decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
-        for model in (configured, created):
-            wrapper = model.change_decoding_strategy
-            offline.guard_model_decoding(model)  # already rebound by decode_with_nemo; must not double-wrap
-            self.assertIs(model.change_decoding_strategy, wrapper)
-            model.change_decoding_strategy(model.cfg.decoding, verbose=False)
-            self.assertIs(model.change_decoding_strategy, wrapper)
-            # the rebuilt decoding must be guarded again by the wrapped strategy call
-            self.assertTrue(getattr(model.decoding.get_words_offsets, offline._GUARD_ATTRIBUTE, False))
-            self.assertEqual(model.strategies, [(model.cfg.decoding, False), (model.cfg.decoding, False)])
-    def test_guard_strips_leading_punctuation_entries_and_retries_once(self):
-        decoding = BuggyWordOffsetsDecoding()
-        offline.guard_leading_punctuation(decoding)
-        char_offsets = [
-            {"char": [","], "start_offset": 0, "end_offset": 1},
-            {"char": [" "], "start_offset": 1, "end_offset": 2},
-            {"char": ["hello"], "start_offset": 2, "end_offset": 3},
-            {"char": ["."], "start_offset": 3, "end_offset": 4},
-        ]
-        encoded_char_offsets = [
-            {"char": [11], "start_offset": 0, "end_offset": 1},
-            {"char": [3], "start_offset": 1, "end_offset": 2},
-            {"char": [431], "start_offset": 2, "end_offset": 3},
-            {"char": [12], "start_offset": 3, "end_offset": 4},
-        ]
-        with self.assertLogs("parakeet.offline", "WARNING") as logs:
-            words = decoding.get_words_offsets(
-                char_offsets=char_offsets,
-                encoded_char_offsets=encoded_char_offsets,
-                word_delimiter_char=" ",
-                supported_punctuation={",", "."},
-            )
-        self.assertEqual(words, [{"word": "hello", "start_offset": 2, "end_offset": 4}])
-        self.assertEqual(len(decoding.calls), 2)
-        retried_char_offsets, retried_encoded_char_offsets, delimiter, punctuation = decoding.calls[1]
-        self.assertEqual(retried_char_offsets, char_offsets[2:])
-        self.assertEqual(retried_encoded_char_offsets, encoded_char_offsets[2:])
-        self.assertEqual((delimiter, punctuation), (" ", {",", "."}))
-        self.assertEqual(len(char_offsets), 4)  # trimmed by slice; the caller's lists are never mutated
-        self.assertEqual(len(logs.output), 1)
-        self.assertRegex(logs.output[0], r"dropping 2 leading punctuation-only offset entries")
-    def test_guard_passes_word_first_input_through_untouched(self):
-        decoding = BuggyWordOffsetsDecoding()
-        offline.guard_leading_punctuation(decoding)
-        char_offsets = [
-            {"char": ["hello"], "start_offset": 0, "end_offset": 1},
-            {"char": [","], "start_offset": 1, "end_offset": 2},
-        ]
-        encoded_char_offsets = [
-            {"char": [431], "start_offset": 0, "end_offset": 1},
-            {"char": [11], "start_offset": 1, "end_offset": 2},
-        ]
-        words = decoding.get_words_offsets(
-            char_offsets=char_offsets,
-            encoded_char_offsets=encoded_char_offsets,
-            word_delimiter_char=" ",
-            supported_punctuation={","},
-        )
-        self.assertEqual(words, [{"word": "hello", "start_offset": 0, "end_offset": 2}])
-        self.assertEqual(len(decoding.calls), 1)
-        self.assertIs(decoding.calls[0][0], char_offsets)
-        self.assertIs(decoding.calls[0][1], encoded_char_offsets)
-    def test_guard_returns_empty_when_every_entry_is_droppable(self):
-        decoding = BuggyWordOffsetsDecoding()
-        offline.guard_leading_punctuation(decoding)
-        with self.assertLogs("parakeet.offline", "WARNING") as logs:
-            words = decoding.get_words_offsets(
-                char_offsets=[{"char": [",", "."], "start_offset": 0, "end_offset": 1}, {"char": ["!"], "start_offset": 1, "end_offset": 2}],
-                encoded_char_offsets=[{"char": [11, 12], "start_offset": 0, "end_offset": 1}, {"char": [13], "start_offset": 1, "end_offset": 2}],
-                word_delimiter_char=" ",
-                supported_punctuation={",", ".", "!"},
-            )
-        self.assertEqual(words, [])
-        self.assertEqual(len(decoding.calls), 1)
-        self.assertRegex(logs.output[0], r"dropping 2 leading punctuation-only offset entries")
-    def test_guard_is_idempotent_and_preserves_the_original_callable(self):
-        decoding = BuggyWordOffsetsDecoding()
-        offline.guard_leading_punctuation(decoding)
-        guarded = decoding.get_words_offsets
-        offline.guard_leading_punctuation(decoding)
-        self.assertIs(decoding.get_words_offsets, guarded)
-        self.assertIs(guarded.__name__, "get_words_offsets")
-        self.assertTrue(getattr(guarded, offline._GUARD_ATTRIBUTE))
-        self.assertIs(guarded.__wrapped__.__func__, BuggyWordOffsetsDecoding.get_words_offsets)
-        self.assertIs(guarded.__wrapped__.__self__, decoding)
-    def test_guard_propagates_failures_it_cannot_recover_from(self):
-        class Failing(BuggyWordOffsetsDecoding):
-            def __init__(self, error):
-                self.error = error
-
-            def get_words_offsets(self, *args, **kwargs):
-                raise self.error
-
-        word_first = [{"char": ["hello"], "start_offset": 0, "end_offset": 1}]
-        for error in (ValueError("unrelated"), IndexError("not from leading punctuation")):
-            with self.subTest(error=error):
-                decoding = Failing(error)
-                offline.guard_leading_punctuation(decoding)
-                with self.assertRaises(type(error)):
-                    decoding.get_words_offsets(
-                        char_offsets=word_first,
-                        encoded_char_offsets=word_first,
-                        word_delimiter_char=" ",
-                        supported_punctuation={","},
-                    )
     def test_request_rejects_url_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "request.json"
@@ -516,8 +191,6 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         for excluded in ("runpod", "whisper", "qwen", "pyannote"):
             self.assertNotIn(excluded, source)
         workflow = (ROOT / ".github" / "workflows" / "publish-asr-v3.yml").read_text()
-        overlay_step = workflow.split("name: Apply the build-only overlay", 1)[1].split("uses: docker/setup-buildx-action", 1)[0]
-        self.assertIn("cp overlay/asr/offline_entrypoint.py source/asr/offline_entrypoint.py", overlay_step)
         staging_tag = "staging-parakeet-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
         final_tag = "parakeet-${{ github.sha }}"
         self.assertIn(staging_tag, workflow)

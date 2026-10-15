@@ -2,13 +2,9 @@
 set -eu
 
 log=/workspace/parakeet-server.log
-startup_timeout=${STARTUP_TIMEOUT_SECONDS:-300}; startup_timeout=${startup_timeout#\"}; startup_timeout=${startup_timeout%\"}
+startup_timeout=${STARTUP_TIMEOUT_SECONDS:-1800}; startup_timeout=${startup_timeout#\"}; startup_timeout=${startup_timeout%\"}
 deadline=$(( $(date +%s) + startup_timeout ))
 report_addr="${REPORT_ADDR:-https://run.vast.ai}"
-model=/workspace/models/parakeet-tdt-0.6b-v3.nemo
-parts=/workspace/models/parts
-cat "$parts"/parakeet-tdt-0.6b-v3.nemo.part.* > "$model.tmp"
-mv "$model.tmp" "$model"
 
 report_error_and_exit() {
   ERROR_MESSAGE=$1 REPORT_ADDR=$report_addr python3 -c '
@@ -31,12 +27,12 @@ import sys
 from urllib.request import Request, urlopen
 request = Request("https://console.vast.ai/api/v0/sign_cert/?instance_id=" + sys.argv[1], data=sys.stdin.buffer.read(), headers={"Content-Type": "application/octet-stream"}, method="POST")
 sys.stdout.buffer.write(urlopen(request, timeout=30).read())
-' "$CONTAINER_ID" < /etc/instance.csr > /etc/instance.crt || report_error_and_exit "failed to sign certificate"
+' "$CONTAINER_ID" < /etc/instance.csr > /etc/instance.crt 2>/dev/null || report_error_and_exit "failed to sign certificate"
 fi
 
 export REPORT_ADDR="$report_addr" WORKER_PORT USE_SSL UNSECURED
 : > "$log"
-( python3 /workspace/server.py 2>&1 | tee -a "$log" >&2 ) &
+python3 /workspace/server.py >>"$log" 2>&1 &
 
 while :; do
   health=$(python3 -c '
@@ -52,9 +48,9 @@ try:
 except Exception:
     pass
 ' 2>/dev/null || true)
-  [ "$health" != failed ] || { tail -n 50 "$log" >&2; exit 1; }
+  [ "$health" != failed ] || { report_error_and_exit "ASR_STARTUP_FAILED"; exit 1; }
   [ "$health" = ready ] && break
-  [ "$(date +%s)" -lt "$deadline" ] || { tail -n 50 "$log" >&2; exit 1; }
+  [ "$(date +%s)" -lt "$deadline" ] || { report_error_and_exit "ASR_STARTUP_FAILED"; exit 1; }
   sleep 1
 done
 echo PARAKEET_SERVER_READY >>"$log"

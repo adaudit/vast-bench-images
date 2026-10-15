@@ -2,7 +2,7 @@
   "format": "adaudit-parakeet-v3-artifacts-v1",
   "platform": "linux/amd64",
   "python": "3.11",
-  "base_image": "python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
+  "base_image": "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
   "resolution_required": false,
   "wheels": [
     {
@@ -198,30 +198,6 @@
       "sha256": "ac266a34437812cf841cecbfe19f355ab9c3dd1ef231afc60415d40ff12a76e4",
       "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/ed/a2/4a3400e4d07d3916172bf74fede08020d7b4df01595d8a97f1e9507af5ae/cytoolz-1.1.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
-    },
-    {
-      "name": "cuda-bindings",
-      "version": "12.9.7",
-      "filename": "cuda_bindings-12.9.7-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
-      "sha256": "c6496a88d84b1209d6651b0370c19c26319e157c22f6d018bf9a358cd8049041",
-      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
-      "source": "https://files.pythonhosted.org/packages/3a/8a/1251e1794b69865aacd5629936006b18ea0816a495de4ecea9a825556eb3/cuda_bindings-12.9.7-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl"
-    },
-    {
-      "name": "cuda-pathfinder",
-      "version": "1.8.1",
-      "filename": "cuda_pathfinder-1.8.1-py3-none-any.whl",
-      "sha256": "ae0137ff9e56ea97499bcbf54f5f2778ec25f3266715ac86da192a795af982a8",
-      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
-      "source": "https://files.pythonhosted.org/packages/9d/e6/22df83f82f9bc26cb1c42265cf14d34d4908dba2a0f261bd7b28244acb00/cuda_pathfinder-1.8.1-py3-none-any.whl"
-    },
-    {
-      "name": "cuda-python",
-      "version": "12.9.7",
-      "filename": "cuda_python-12.9.7-py3-none-any.whl",
-      "sha256": "23a1fc406d491eef7a7e985095725cb7b20a04a7bd9b7a66400e5c86e082e0aa",
-      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
-      "source": "https://files.pythonhosted.org/packages/c1/9d/05e753afbaac3f92691059b3ba875589c98a425d69e5808cec32b31b580c/cuda_python-12.9.7-py3-none-any.whl"
     },
     {
       "name": "datasets",
@@ -614,7 +590,7 @@
       "version": "0.5.4",
       "filename": "ml_dtypes-0.5.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "sha256": "19b9a53598f21e453ea2fbda8aa783c20faff8e1eeb0d7ab899309a0053f1483",
-      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/a9/80/19189ea605017473660e43762dc853d2797984b3c7bf30ce656099add30c/ml_dtypes-0.5.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
@@ -702,7 +678,7 @@
       "version": "1.22.0",
       "filename": "onnx-1.22.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "sha256": "1d0a2bdb15eb2b3cb65c438f3423d9620d14fdce32f92380e6bb1b2e09568ef5",
-      "compatibility": "linux/amd64; CPython 3.11; python:3.11-slim-bookworm@sha256:2fc9207f64226cb05ac317cee0bab6fa55a9ea311ce5a086baddd4b4a83c2d3c",
+      "compatibility": "linux/amd64; CPython 3.11; pytorch/pytorch@sha256:c8268a92a69bd500f8be0e665b2630ee006dadaf7bfbc24249141b15ff622755",
       "source": "https://files.pythonhosted.org/packages/2b/a0/c9d9d56ceadb1c0a90a7cbec5a0510520ab6538938944fa84548e4b5b054/onnx-1.22.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
     },
     {
