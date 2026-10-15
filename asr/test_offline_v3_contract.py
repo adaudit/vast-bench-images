@@ -190,9 +190,10 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         source = (ROOT / "asr-v3.Dockerfile").read_text().lower() + ENTRYPOINT.read_text().lower()
         for excluded in ("runpod", "whisper", "qwen", "pyannote"):
             self.assertNotIn(excluded, source)
-        workflow = (ROOT / ".github" / "workflows" / "publish-asr-v3.yml").read_text()
-        staging_tag = "staging-parakeet-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
-        final_tag = "parakeet-${{ github.sha }}"
+        workflow = (ROOT / ".github" / "workflows" / "publish-asr-v3.yml").read_text().split("  publish-diar-v1:", 1)[0]
+        self.assertIn("inputs.authorize_known_vulnerable_canary && inputs.target == 'asr' && github.ref == 'refs/heads/hourly-batch/20261015'", workflow)
+        staging_tag = "staging-hourly-batch-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+        final_tag = "hourly-batch-${{ github.sha }}-${{ github.run_id }}"
         self.assertIn(staging_tag, workflow)
         self.assertIn(final_tag, workflow)
         buildx_setup = "docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435"
@@ -215,7 +216,7 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         self.assertNotIn("osv_status", build_step)
         self.assertNotIn("continuing by release policy", build_step)
         self.assertIn('STAGING_TAG: ' + staging_tag, build_step)
-        self.assertIn('-t "$IMAGE:$STAGING_TAG"', build_step)
+        self.assertIn('--output type=image,name="$IMAGE:$STAGING_TAG",push=true,oci-mediatypes=true,compression=zstd,force-compression=true', build_step)
         self.assertNotIn('-t "$IMAGE:$TAG"', build_step)
         self.assertNotIn('$TAG', build_step)
         self.assertLess(build_step.index('docker pull "$IMAGE@$digest"'), build_step.index('docker save "$IMAGE@$digest"'))
@@ -223,7 +224,7 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         self.assertLess(build_step.index('scan image --archive /workspace/image.tar'), build_step.index('docker buildx imagetools inspect "$IMAGE@$digest"'))
         attest_step = workflow.split("name: Attest final OCI index", 1)[1].split("name: Promote", 1)[0]
         self.assertIn("subject-digest: ${{ steps.build.outputs.digest }}", attest_step)
-        promote_step = workflow.split("name: Promote", 1)[1]
+        promote_step = workflow.split("name: Promote", 1)[1].split("      - name: Write publish summary", 1)[0]
         expected_promotion = 'docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"'
         dry_run = 'promotion_manifest="$(docker buildx imagetools create --dry-run --prefer-index=false "$IMAGE@$DIGEST")"'
         planned_digest = 'planned_digest="sha256:$(printf \'%s\' "$promotion_manifest" | sha256sum | awk \'{print $1}\')"'
@@ -242,7 +243,7 @@ sys.exit(int(os.environ.get(prefix + "_EXIT", "0")))
         self.assertEqual(promote_step.count("imagetools inspect"), 1)
         self.assertLess(promote_step.index("fi"), promote_step.index(recovery_inspect))
         self.assertLess(workflow.index("name: Attest final OCI index"), workflow.index("name: Promote"))
-        self.assertEqual(workflow.rstrip().splitlines()[-1], '          test "$resolved" = "$DIGEST"')
+        self.assertEqual(promote_step.rstrip().splitlines()[-1], '          test "$resolved" = "$DIGEST"')
         self.assertNotIn("vast-bench-diar", workflow)
         manifest = json.loads((ROOT / "locks" / "parakeet-v3.artifacts.json").read_text())
         self.assertFalse(manifest["resolution_required"])

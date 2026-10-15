@@ -12,19 +12,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
-    from offline_entrypoint import ContractError as ModelContractError
-    from vast_adapter import ContractError, parse_request
-    from parakeet_pool import ParakeetPool
-    from startup import Stages, verify_extracted_model
-    from batch_runtime import batch_events
-except ModuleNotFoundError:
     from asr.offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
     from asr.offline_entrypoint import ContractError as ModelContractError
     from asr.vast_adapter import ContractError, parse_request
     from asr.parakeet_pool import ParakeetPool
     from asr.startup import Stages, verify_extracted_model
     from asr.batch_runtime import batch_events
+except ModuleNotFoundError:
+    from offline_entrypoint import MODEL_PATH, build_candidate, configure_nemo_confidence, extract_aligned_words, verify_model
+    from offline_entrypoint import ContractError as ModelContractError
+    from vast_adapter import ContractError, parse_request
+    from parakeet_pool import ParakeetPool
+    from startup import Stages, verify_extracted_model
+    from batch_runtime import batch_events
 
 
 LOGGER = logging.getLogger("parakeet.server")

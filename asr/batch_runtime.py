@@ -16,9 +16,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION, AlignmentError, ConfidenceMismatchError
-except ModuleNotFoundError:
     from asr.offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION, AlignmentError, ConfidenceMismatchError
+except ModuleNotFoundError:
+    from offline_entrypoint import MODEL_ID, MODEL_REVISION, REQUEST_VERSION, AlignmentError, ConfidenceMismatchError
 
 MAX_AUDIO_BYTES = 512 * 1024 * 1024
 _DNS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="asr-dns")

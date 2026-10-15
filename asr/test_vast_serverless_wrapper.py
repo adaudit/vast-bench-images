@@ -245,6 +245,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             directory.cleanup(); os.environ.clear(); os.environ.update(env)
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: []})(), batch_transcriber=lambda _: [[{"start_seconds": 0, "end_seconds": 1, "text": "fixture", "confidence": .9}]])
+        runtime.initialize_once()
+        self.assertTrue(runtime.ready)
         http = server.make_server(("127.0.0.1", 0), runtime)
         thread = threading.Thread(target=http.serve_forever); thread.start()
         try:
@@ -262,6 +264,8 @@ print(json.dumps({"handler": "response_generator" in captured["handler"], "accep
         finally:
             directory.cleanup(); os.environ.clear(); os.environ.update(env)
         runtime = server.Runtime(model_verifier=lambda _: None, model_loader=lambda: type("Model", (), {"transcribe": lambda *_args, **_kwargs: []})(), batch_transcriber=lambda _: [[{"start_seconds": 7.36, "end_seconds": 7.44, "text": "fixture", "confidence": .9}]])
+        runtime.initialize_once()
+        self.assertTrue(runtime.ready)
         http = server.make_server(("127.0.0.1", 0), runtime)
         thread = threading.Thread(target=http.serve_forever); thread.start()
         try:
