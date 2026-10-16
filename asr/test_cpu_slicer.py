@@ -29,6 +29,15 @@ class CpuSlicerTest(unittest.TestCase):
             with self.subTest(plan=plan), self.assertRaises(adapter.ContractError):
                 adapter.validate_chunk_plan(plan, 400)
 
+    def test_plan_rejects_pieces_above_the_strict_cap(self):
+        with self.assertRaises(adapter.ContractError):
+            adapter.validate_chunk_plan(((0, 301.0000000000001), (300.0000000000001, 601), (600, 900)), 900)
+
+    def test_fallback_planner_stays_within_the_strict_cap_off_the_frame_grid(self):
+        chunks = adapter.chunk_ranges(900, silence_points=(2400005 / 16000,))
+        self.assertTrue(all(end - start <= 301 for start, end in chunks))
+        self.assertEqual(adapter.validate_chunk_plan(chunks, 900), chunks)
+
     def test_slices_are_frame_aligned_and_preserve_pcm(self):
         body = audio(3)
         result = adapter.slice_wav(body, .25, 1.25)

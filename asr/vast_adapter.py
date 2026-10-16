@@ -28,18 +28,30 @@ class Request:
 
 
 def chunk_ranges(duration, *, silence_points=()):
-    if duration <= CHUNK_SECONDS + OVERLAP_SECONDS:
+    """Fallback planner mirroring the backend: latest silence in [start+L/2, start+L],
+    else hard cut at start+L, with a 1 s overlap. Boundaries are chosen on the
+    integer 16 kHz frame grid and the endpoint alone gets a nextafter nudge so
+    float rounding can never push a piece past the strict cap."""
+    rate = 16000
+    chunk_frames, overlap_frames = round(CHUNK_SECONDS * rate), round(OVERLAP_SECONDS * rate)
+    silence_frames = [round(point * rate) for point in silence_points]
+    total, start_frame, chunks = round(duration * rate), 0, []
+    if total <= chunk_frames + overlap_frames:
         return ((0.0, duration),)
-    chunks, start = [], 0.0
-    while start < duration:
-        if duration - start <= CHUNK_SECONDS + OVERLAP_SECONDS:
+    while start_frame < total:
+        start = start_frame / rate
+        if total - start_frame <= chunk_frames + overlap_frames:
             chunks.append((start, duration))
             break
-        target = start + CHUNK_SECONDS
-        nearby = [point for point in silence_points if start + CHUNK_SECONDS / 2 <= point <= target]
+        target = start_frame + chunk_frames
+        window_start = start_frame + chunk_frames // 2
+        nearby = [frame for frame in silence_frames if window_start <= frame <= target]
         boundary = max(nearby) if nearby else target
-        chunks.append((start, min(duration, boundary + OVERLAP_SECONDS)))
-        start = boundary
+        end = min(duration, (boundary + overlap_frames) / rate)
+        while end - start > CHUNK_SECONDS + OVERLAP_SECONDS:
+            end = math.nextafter(end, start)
+        chunks.append((start, end))
+        start_frame = boundary
     return tuple(chunks)
 
 
@@ -56,7 +68,7 @@ def validate_chunk_plan(plan, duration):
         start, end = interval
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (start, end)):
             raise ContractError("invalid chunk interval")
-        if (start < 0 or not start < end or end > duration + 1e-6 or end - start > CHUNK_SECONDS + OVERLAP_SECONDS + 1e-6
+        if (start < 0 or not start < end or end > duration + 1e-6 or end - start > CHUNK_SECONDS + OVERLAP_SECONDS
                 or start <= previous_start or end <= previous_end or start > previous_end + 1e-6
                 or previous_end - start > OVERLAP_SECONDS + 1e-6
                 or round(end * 16000) <= round(start * 16000)
