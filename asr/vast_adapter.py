@@ -10,7 +10,7 @@ try:
 except ModuleNotFoundError:  # local test invocation keeps modules under asr/
     from asr.offline_entrypoint import LANE, MODEL_ID, MODEL_REVISION, REQUEST_VERSION
 
-CHUNK_SECONDS = 40.0
+CHUNK_SECONDS = 300.0
 OVERLAP_SECONDS = 1.0
 MAX_AUDIO_BYTES = 512 * 1024 * 1024
 
@@ -36,7 +36,7 @@ def chunk_ranges(duration, *, silence_points=()):
             chunks.append((start, duration))
             break
         target = start + CHUNK_SECONDS
-        nearby = [point for point in silence_points if start + 20 <= point <= target]
+        nearby = [point for point in silence_points if start + CHUNK_SECONDS / 2 <= point <= target]
         boundary = max(nearby) if nearby else target
         chunks.append((start, min(duration, boundary + OVERLAP_SECONDS)))
         start = boundary
@@ -56,11 +56,11 @@ def validate_chunk_plan(plan, duration):
         start, end = interval
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (start, end)):
             raise ContractError("invalid chunk interval")
-        if (start < 0 or not start < end or end > duration + 1e-6 or end - start > 41 + 1e-6
+        if (start < 0 or not start < end or end > duration + 1e-6 or end - start > CHUNK_SECONDS + OVERLAP_SECONDS + 1e-6
                 or start <= previous_start or end <= previous_end or start > previous_end + 1e-6
                 or previous_end - start > OVERLAP_SECONDS + 1e-6
                 or round(end * 16000) <= round(start * 16000)
-                or round(end * 16000) - round(start * 16000) > 41 * 16000):
+                or round(end * 16000) - round(start * 16000) > (CHUNK_SECONDS + OVERLAP_SECONDS) * 16000):
             raise ContractError("invalid chunk coverage")
         if index == 0 and start != 0:
             raise ContractError("invalid chunk coverage")

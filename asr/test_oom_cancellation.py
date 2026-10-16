@@ -64,7 +64,7 @@ class OOMRecoveryTest(unittest.TestCase):
         self.assertEqual(model.transcribe.call_count, 2)
         self.assertGreaterEqual(torch.cuda.empty_cache.call_count, 2)
 
-    def test_call_chunks_are_at_most_41_seconds_and_use_three_independent_lanes(self):
+    def test_call_chunks_are_at_most_301_seconds_and_use_three_independent_lanes(self):
         active = maximum = 0
         lock = threading.Lock()
         barrier = threading.Barrier(3)
@@ -93,7 +93,7 @@ class OOMRecoveryTest(unittest.TestCase):
         control = BatchControl()
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            result = runtime._transcribe_many([request(120)], control=control)[0]
+            result = runtime._transcribe_many([request(900)], control=control)[0]
             control.finish()
         lines = output.getvalue().splitlines()
         units = [line for line in lines if line.startswith('UNIT ')]
@@ -101,13 +101,13 @@ class OOMRecoveryTest(unittest.TestCase):
         self.assertEqual({int(line.split()[1].split('=')[1]) for line in units}, {1, 2, 3})
         for line in units:
             self.assertRegex(line, r'^UNIT lane=[1-3] audio_ms=[0-9]+ wall_ms=[0-9]+ start=[0-9]{4}-')
-        self.assertRegex(lines[-1], r'^BATCH_LANES max_concurrent=3 units=3 audio_s=122[.]000 wall_s=[0-9]+[.][0-9]{3}$')
+        self.assertRegex(lines[-1], r'^BATCH_LANES max_concurrent=3 units=3 audio_s=902[.]000 wall_s=[0-9]+[.][0-9]{3}$')
         self.assertEqual(maximum, 3)
         self.assertEqual(len({row[0] for row in calls}), 3)
-        self.assertEqual(sorted(row[1] for row in calls), [40, 41, 41])
+        self.assertEqual(sorted(row[1] for row in calls), [300, 301, 301])
         self.assertTrue(all(row[2:] == (1, False) for row in calls))
         self.assertEqual(len(result), 3)
-        self.assertEqual([round(word['start_seconds'], 1) for word in result], [.1, 40.1, 80.1])
+        self.assertEqual([round(word['start_seconds'], 1) for word in result], [.1, 300.1, 600.1])
 
     def test_oom_retry_waits_for_other_active_lane_to_finish(self):
         entered, release, finished, first_failed, retry_started = [threading.Event() for _ in range(5)]

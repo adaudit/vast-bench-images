@@ -14,20 +14,20 @@ from asr import server
 
 class CpuSlicerTest(unittest.TestCase):
     def test_latest_retained_boundary_before_target_and_exact_overlap(self):
-        chunks = adapter.chunk_ranges(100, silence_points=(19, 30, 55, 60, 85))
-        self.assertEqual(chunks, ((0, 31), (30, 61), (60, 100)))
-        self.assertEqual(adapter.validate_chunk_plan(chunks, 100), chunks)
-        self.assertTrue(all(end - start <= 41 for start, end in chunks))
-        self.assertEqual(adapter.chunk_ranges(41), ((0, 41),))
-        self.assertEqual(adapter.chunk_ranges(100, silence_points=(55,))[0], (0, 41))
+        chunks = adapter.chunk_ranges(1000, silence_points=(190, 290, 550, 600, 850))
+        self.assertEqual(chunks, ((0, 291), (290, 551), (550, 851), (850, 1000)))
+        self.assertEqual(adapter.validate_chunk_plan(chunks, 1000), chunks)
+        self.assertTrue(all(end - start <= 301 for start, end in chunks))
+        self.assertEqual(adapter.chunk_ranges(301), ((0, 301),))
+        self.assertEqual(adapter.chunk_ranges(1000, silence_points=(550,))[0], (0, 301))
 
     def test_plan_rejects_gaps_extra_overlap_long_chunks_and_noncanonical_bounds(self):
-        invalid = [None, [], [[1, 40]], [[0, 39]], [[0, 42]], [[0, 20], [21, 40]],
-                   [[0, 20], [18, 40]], [[0, 20], [0, 40]], [[0, 20], [19, 20]],
-                   [[0, float('nan')]], [[False, 40]], [[0, 20], [19, 41]]]
+        invalid = [None, [], [[1, 300]], [[0, 300]], [[0, 302]], [[0, 150], [151, 400]],
+                   [[0, 150], [148, 400]], [[0, 150], [0, 400]], [[0, 150], [149, 150]],
+                   [[0, float('nan')]], [[False, 300]], [[0, 150], [149, 401]]]
         for plan in invalid:
             with self.subTest(plan=plan), self.assertRaises(adapter.ContractError):
-                adapter.validate_chunk_plan(plan, 40)
+                adapter.validate_chunk_plan(plan, 400)
 
     def test_slices_are_frame_aligned_and_preserve_pcm(self):
         body = audio(3)
@@ -59,11 +59,11 @@ class CpuSlicerTest(unittest.TestCase):
             timestamp={'word': [{'word': 'word' + str(index), 'start': start, 'end': end}
                                 for index, (start, end, _) in enumerate(spans)]},
             word_confidence=[confidence for _, _, confidence in spans])
-        expected = pin.build_candidate(41, pin.extract_aligned_words(hypothesis, 41))['segments']
+        expected = pin.build_candidate(301, pin.extract_aligned_words(hypothesis, 301))['segments']
         outputs = iter([[hypothesis], [SimpleNamespace(timestamp={'word': []}, word_confidence=[])]])
         model = SimpleNamespace(transcribe=lambda *args, **kwargs: next(outputs))
         runtime = server.Runtime(model_loader=lambda: model)
-        actual = runtime._transcribe_many([fixtures.request(80)], model=model)[0]
+        actual = runtime._transcribe_many([fixtures.request(500)], model=model)[0]
         self.assertEqual(len(expected), 6)
         self.assertEqual(actual, expected)
 
