@@ -159,12 +159,22 @@ def _chunk_case(path, directory):
     return chunks
 
 
+def _aligned(result, path):
+    with wave.open(str(path), 'rb') as audio:
+        duration = audio.getnframes() / audio.getframerate()
+    try:
+        return extract_aligned_words(result, duration=duration)
+    except TypeError:
+        # Older checkout contract accepts no canonical duration.
+        return extract_aligned_words(result)
+
+
 def _transcribe_case(model, path, mode, scratch):
     if mode != 'chunked':
-        return extract_aligned_words(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0])
+        return _aligned(model.transcribe([str(path)], batch_size=1, timestamps=True, num_workers=0)[0], path)
     words = []
     for offset, chunk in _chunk_case(path, scratch):
-        for item in extract_aligned_words(model.transcribe([str(chunk)], batch_size=1, timestamps=True, num_workers=0)[0]):
+        for item in _aligned(model.transcribe([str(chunk)], batch_size=1, timestamps=True, num_workers=0)[0], chunk):
             words.append({**item, 'start_seconds': item['start_seconds'] + offset, 'end_seconds': item['end_seconds'] + offset})
         chunk.unlink()
     deduplicated = []
