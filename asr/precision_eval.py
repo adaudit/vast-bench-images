@@ -213,41 +213,33 @@ def evaluate(audio_dir, *, model_loader=load_model, torch_module=None):
         load_s = time.perf_counter() - started
         loaded_memory = torch.cuda.memory_allocated()
         outputs[precision] = {}
-        selected = paths if not precision.endswith('chunked') and precision != 'fp32_local_attn' else [p for p in paths if p.stem in long_cases]
-        mode = 'chunked' if precision.endswith('chunked') else 'whole'
-        whole_started = time.perf_counter()
+        selected = paths if precision in ('fp32', 'bf16', 'bf16_weights', 'fp32_graphs') else [p for p in paths if p.stem in long_cases]
+        # Whole fp32 attention on a 15-minute call exceeds 24 GB; production
+        # chunks long calls, so every >=900 s case runs chunked in all variants.
+        mode = 'mixed_long_chunked' if precision in ('fp32', 'bf16', 'bf16_weights', 'fp32_graphs') else 'chunked'
+        started = time.perf_counter()
         with torch.inference_mode():
             for path in selected:
+                case_mode = 'chunked' if path.stem in long_cases else 'whole'
                 autocast = torch.autocast(device_type='cuda', dtype=torch.bfloat16) if precision in ('bf16', 'bf16_weights') else contextlib.nullcontext()
                 with autocast:
-                    outputs[precision][path.stem] = _transcribe_case(model, path, mode, scratch)
-            whole_elapsed = time.perf_counter() - whole_started
-            chunk_elapsed = None
-            if precision == 'fp32_local_attn':
-                chunk_started = time.perf_counter()
-                outputs['fp32_local_attn_chunked'] = {}
-                for path in selected:
-                    outputs['fp32_local_attn_chunked'][path.stem] = _transcribe_case(model, path, 'chunked', scratch)
-                chunk_elapsed = time.perf_counter() - chunk_started
+                    outputs[precision][path.stem] = _transcribe_case(model, path, case_mode, scratch)
+            elapsed = time.perf_counter() - started
         torch.cuda.synchronize()
         audio_s = sum(durations[p.stem] for p in selected)
-        precisions[precision] = dict(load_s=load_s, transcribe_wall_s=whole_elapsed, mode=mode,
+        precisions[precision] = dict(load_s=load_s, transcribe_wall_s=elapsed, mode=mode,
                                     case_count=len(selected), audio_duration_s=audio_s,
-                                    realtime_factor=_divide(whole_elapsed, audio_s),
+                                    realtime_factor=_divide(elapsed, audio_s),
                                     loaded_gpu_allocated_bytes=loaded_memory,
                                     peak_gpu_allocated_bytes=torch.cuda.max_memory_allocated(),
                                     peak_gpu_reserved_bytes=torch.cuda.max_memory_reserved())
-        if chunk_elapsed is not None:
-            precisions['fp32_local_attn_chunked'] = {**precisions[precision], 'mode': 'chunked',
-                                                    'transcribe_wall_s': chunk_elapsed,
-                                                    'realtime_factor': _divide(chunk_elapsed, audio_s)}
         del model
         gc.collect()
         torch.cuda.empty_cache()
     shutil.rmtree(scratch, ignore_errors=True)
     comparisons = {}
     for precision, reference in (('bf16', 'fp32'), ('bf16_weights', 'fp32'), ('fp32_graphs', 'fp32'),
-                                 ('fp32_local_attn', 'fp32'), ('fp32_local_attn_chunked', 'fp32_chunked')):
+                                 ('fp32_local_attn', 'fp32_chunked')):
         cases = {case: dict(duration_s=duration, **compare_words(outputs[reference][case], outputs[precision][case]))
                  for case, duration in durations.items() if case in outputs[precision]}
         sums = {key: sum(case[key] for case in cases.values()) for key in (
@@ -267,11 +259,10 @@ def main():
     parser.add_argument('--audio-dir', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
-    # Redirect OS descriptors too: NeMo/tqdm/native code must not leak evidence.
+    # Silence model/native output; tracebacks remain numeric/path-only.
     logging.disable(logging.CRITICAL)
     with open(os.devnull, 'w') as sink:
         os.dup2(sink.fileno(), 1)
-        os.dup2(sink.fileno(), 2)
         try:
             result = evaluate(args.audio_dir)
             fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -279,6 +270,8 @@ def main():
                 json.dump(result, output, allow_nan=False, separators=(',', ':'))
                 output.write('\n')
         except Exception:
+            import traceback
+            traceback.print_exc()
             raise SystemExit(1) from None
 
 
